@@ -1,0 +1,11 @@
+# Tema escuro fixo do painel (independe do modo claro/escuro do navegador).
+# Este arquivo deve ficar em: Documentos\painel\.streamlit\config.toml
+[theme]
+base = "dark"
+primaryColor = "#22c55e"
+backgroundColor = "#0b0f14"
+secondaryBackgroundColor = "#131a22"
+textColor = "#e6edf3"
+
+[browser]
+gatherUsageStats = false
