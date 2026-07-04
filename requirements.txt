@@ -1,0 +1,9 @@
+# Lista de bibliotecas que o servidor instala automaticamente.
+# Equivale ao "pip install ..." que você rodou no seu PC.
+streamlit
+yfinance
+plotly
+pandas
+numpy
+scipy
+streamlit-autorefresh
