@@ -39,6 +39,17 @@
 #      (SPY/QQQ) para o futuro (ES/NQ) usando a razão calculada AO VIVO
 #      (basis = preço do futuro ÷ preço do ETF). Tabela com spot, muros e
 #      flip já no preço do futuro, para operar na corretora.
+#  11. FASE 1.5 — VETO SPY×QQQ: regra de ouro do método em código. SPY dá
+#      a permissão, QQQ é o gatilho. Setup do QQQ contra o SPY = VETO
+#      (banner, playbook e leitura cruzada); S2 no QQQ sem S2 no SPY =
+#      VETO; alinhados = "permissão concedida".
+#  12. FASE 1.7 — JUROS AUTOMÁTICO: r buscado do ^IRX (T-bill 13 semanas)
+#      com cache de 1 h e fallback manual. Origem exibida no cabeçalho.
+#  13. FASE 2.2 — MODO CELULAR: toggle na barra lateral. Gamma vira
+#      barras HORIZONTAIS (strikes no eixo Y), cartões em 2 linhas de 3,
+#      layout todo empilhado (dual = SPY sobre QQQ).
+#  14. MENTOR DE DISCIPLINA: regras escritas pelo próprio operador; uma
+#      por dia em banner + expander com todas. Estratégia, não sorte.
 #
 # HONESTIDADE TÉCNICA (não remover):
 #   - Dados yfinance: gratuitos e ATRASADOS (~15 min em opções); open
@@ -111,9 +122,17 @@ st.sidebar.title("Configurações")
 MODO_VISAO = st.sidebar.radio("Modo de visão",
                               ["Um ativo", "SPY + QQQ lado a lado"])
 TICKER_UNICO = st.sidebar.selectbox("Ativo (modo um ativo)", ["SPY", "QQQ"])
-TAXA_JUROS = st.sidebar.number_input("Taxa de juros anual (r)", value=0.05,
-                                     step=0.005, format="%.3f")
+MODO_CELULAR = st.sidebar.checkbox(
+    "📱 Modo celular (layout vertical)", value=False,
+    help="Gamma em barras horizontais e tudo empilhado — muito mais "
+         "legível em tela estreita.")
 st.sidebar.markdown("---")
+USAR_R_AUTO = st.sidebar.checkbox(
+    "Taxa de juros automática (^IRX)", value=True,
+    help="Busca a taxa real do T-bill americano de 13 semanas no Yahoo. "
+         "Se falhar, usa o valor manual abaixo.")
+TAXA_MANUAL = st.sidebar.number_input("Taxa de juros manual (reserva)",
+                                      value=0.05, step=0.005, format="%.3f")
 MOSTRAR_FUTUROS = st.sidebar.checkbox(
     "Converter níveis para futuros (ES/NQ)", value=True,
     help="Mostra os muros e alvos já convertidos para o preço do futuro "
@@ -208,6 +227,27 @@ def razao_futuro(ticker, spot_etf):
         return nome, preco_fut, razao
     except Exception:
         return None, None, None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def taxa_juros_automatica():
+    """
+    JUROS AUTOMÁTICO (Fase 1.7). Busca o ^IRX — rendimento do T-bill
+    americano de 13 semanas — que o Yahoo cota em % ao ano (ex.: 5.21).
+    É a aproximação padrão da 'taxa livre de risco' do Black-Scholes.
+    Cache de 1 hora (juros não muda a cada minuto). Se falhar, o painel
+    usa o valor manual da barra lateral (fallback).
+    """
+    try:
+        h = yf.Ticker("^IRX").history(period="5d")
+        if h.empty:
+            return None
+        v = float(h["Close"].iloc[-1])
+        if 0 < v < 20:          # sanidade: taxa entre 0% e 20% a.a.
+            return v / 100.0
+    except Exception:
+        pass
+    return None
 
 
 def calcular_vwap(hist):
@@ -469,6 +509,52 @@ def detectar_setup(barras, spot, flip, dominio, cw, pw):
         obs="Aguardar o preço se aproximar de uma barra-chave.")
 
 
+def aplicar_veto_spy_qqq(dspy, dqqq):
+    """
+    VETO SPY×QQQ (Fase 1.5) — a regra de ouro do método virando código.
+
+    SPY = PERMISSÃO (muros mais fortes do mercado, benchmark de liquidez).
+    QQQ = GATILHO (instrumento de rompimento). Nunca operar o QQQ contra
+    o SPY. Esta função compara os setups dos dois ativos e:
+      - VETA o setup do QQQ quando o SPY aponta na direção oposta;
+      - VETA um S2 no QQQ se o SPY não tiver também perdido o nível
+        (exigência explícita do método para rompimento baixista);
+      - CONFIRMA ("permissão concedida") quando estão alinhados.
+    O veto é gravado dentro do setup do QQQ e aparece no banner, no
+    playbook e na leitura cruzada.
+    """
+    s_q = dqqq.get("setup")
+    s_s = dspy.get("setup")
+    if not s_q or s_q.get("codigo") in (None, "—"):
+        return
+
+    def direcao(s):
+        if not s:
+            return None
+        v = s.get("vies", "")
+        if "COMPRADOR" in v:
+            return "compra"
+        if "VENDEDOR" in v:
+            return "venda"
+        return None
+
+    dir_q, dir_s = direcao(s_q), direcao(s_s)
+    if not dir_q:
+        return
+
+    if dir_s and dir_s != dir_q:
+        s_q["veto"] = (
+            f"SPY em {s_s['codigo']} ({dir_s.upper()}) na direção OPOSTA "
+            f"ao {s_q['codigo']} do QQQ ({dir_q.upper()}). Regra do "
+            f"método: o SPY dá a permissão — não operar o QQQ contra ele.")
+    elif s_q.get("codigo") == "S2" and (not s_s or s_s.get("codigo") != "S2"):
+        s_q["veto"] = (
+            "S2 (rompimento baixista) no QQQ EXIGE que o SPY também tenha "
+            "perdido o nível — e o SPY ainda não confirmou.")
+    else:
+        s_q["confirmacao"] = "SPY alinhado — permissão concedida."
+
+
 def estimar_fluxo(calls, puts, ticker, acumular):
     """Net premium estimado + fluxo por strike (fotografias de volume)."""
     k_snap, k_serie, k_strike = f"snap_{ticker}", f"serie_{ticker}", f"strikes_{ticker}"
@@ -698,6 +784,12 @@ def gerar_playbook(t, d, agora_local):
             L.append(f"  gatilho .....: {s['gatilho']}")
             L.append(f"  alvo ........: {s['alvo']}")
             L.append(f"  invalidação .: {s['invalidacao']}")
+            if s.get("veto"):
+                L.append(f"  <span class='neg'>⛔ VETO SPY×QQQ: "
+                         f"{s['veto']}</span>")
+            elif s.get("confirmacao"):
+                L.append(f"  <span class='titulo'>✔ {s['confirmacao']}"
+                         f"</span>")
             L.append(f"  <span class='aviso'>{s['obs']}</span>")
             L.append("")
         elif s:
@@ -775,6 +867,16 @@ def leitura_cruzada(dspy, dqqq):
             L.append("Regimes DIVERGENTES entre SPY e QQQ → sinal misto; em "
                      "divergência, os níveis do SPY têm precedência.")
 
+    # ----- Veto/permissão dos setups (Fase 1.5) -----
+    s_q = dqqq.get("setup") or {}
+    if s_q.get("veto"):
+        L.append("")
+        L.append(f"<span class='neg'>⛔ VETO NO SETUP DO QQQ: "
+                 f"{s_q['veto']}</span>")
+    elif s_q.get("confirmacao"):
+        L.append("")
+        L.append(f"<span class='titulo'>✔ Setup do QQQ com {s_q['confirmacao'].lower()}</span>")
+
     L.append("")
     L.append("<span class='aviso'>Leitura automática por regras; premissas "
              "estatísticas podem falhar. Estudo, não recomendação.</span>")
@@ -806,13 +908,26 @@ def faixa_setup(d):
     else:
         cor_borda, cor_texto, fundo = "#92400e", "#fbbf24", "#422006"
     titulo = (f"SETUP {cod} — {s['nome']}" if cod != "—" else s["nome"])
+    # Veto SPY×QQQ tem prioridade visual máxima: borda vermelha + aviso.
+    veto = s.get("veto")
+    conf = s.get("confirmacao")
+    if veto:
+        cor_borda, fundo = "#7f1d1d", "#2a0a0a"
+    extra = ""
+    if veto:
+        extra = (f"<div style='color:#f87171;font-size:0.85rem;"
+                 f"font-weight:700;margin-top:4px;'>⛔ VETO: {veto}</div>")
+    elif conf:
+        extra = (f"<div style='color:#22c55e;font-size:0.8rem;"
+                 f"margin-top:4px;'>✔ {conf}</div>")
     st.markdown(
         f"<div style='background:{fundo};border:1px solid {cor_borda};"
         f"border-radius:10px;padding:10px 16px;margin:4px 0 10px 0;'>"
         f"<span style='color:{cor_texto};font-weight:700;font-size:0.95rem;'>"
         f"▶ {d['ticker']} · {titulo}</span>"
         f"<span style='color:#8b98a5;font-size:0.85rem;'> &nbsp;·&nbsp; "
-        f"viés {s['vies']} &nbsp;·&nbsp; alvo: {s['alvo']}</span></div>",
+        f"viés {s['vies']} &nbsp;·&nbsp; alvo: {s['alvo']}</span>"
+        f"{extra}</div>",
         unsafe_allow_html=True)
 
 
@@ -902,13 +1017,47 @@ def processar(ticker, acumular_fluxo):
                 bear_acum=num(serie[-1]["bear_acum"]) if serie else 0.0)
 
 
-def grafico_gex(d, altura=340):
+def grafico_gex(d, altura=340, horizontal=False):
     faixa = d["por_strike"][(d["por_strike"]["strike"] > d["spot"] * 0.965) &
                             (d["por_strike"]["strike"] < d["spot"] * 1.035)]
+    cores = ["#22c55e" if g >= 0 else "#3b82f6" for g in faixa["gex"]]
+
+    # ---------- MODO CELULAR (Fase 2.2): barras HORIZONTAIS ----------
+    # Strikes no eixo vertical: em tela estreita, a leitura fica muito
+    # mais natural (como um "mapa de profundidade" de cima para baixo).
+    if horizontal:
+        fig = go.Figure()
+        fig.add_bar(y=faixa["strike"], x=faixa["gex"], orientation="h",
+                    marker_color=cores)
+        fig.add_hline(y=d["spot"], line_dash="dot", line_color="#e6edf3",
+                      annotation_text=f"Spot {d['spot']:.2f}",
+                      annotation_position="top right",
+                      annotation_font_color="#e6edf3")
+        if d["cw"]:
+            fig.add_hline(y=d["cw"], line_color="#22c55e",
+                          annotation_text="Call Wall",
+                          annotation_position="top left",
+                          annotation_font_color="#22c55e")
+        if d["pw"]:
+            fig.add_hline(y=d["pw"], line_color="#ef4444",
+                          annotation_text="Put Wall",
+                          annotation_position="bottom left",
+                          annotation_font_color="#ef4444")
+        if d["flip"]:
+            fig.add_hline(y=d["flip"], line_dash="dash",
+                          line_color="#eab308", annotation_text="Flip",
+                          annotation_position="left",
+                          annotation_font_color="#eab308")
+        aviso_0dte = "  ⚠ VENCE HOJE" if d.get("venc_hoje") else ""
+        fig.update_layout(title=f"{d['ticker']} — Gamma (venc. "
+                                f"{d['venc']}){aviso_0dte}")
+        fig.update_xaxes(tickformat="~s")
+        return tema(fig, altura)
+
+    # ---------- MODO DESKTOP: barras verticais (original) ----------
     fig = go.Figure()
     fig.add_bar(x=faixa["strike"], y=faixa["gex"],
-                marker_color=["#22c55e" if g >= 0 else "#3b82f6"
-                              for g in faixa["gex"]])
+                marker_color=cores)
     fig.add_vline(x=d["spot"], line_dash="dot", line_color="#e6edf3",
                   annotation_text=f"Spot {d['spot']:.2f}",
                   annotation_position="top",
@@ -967,8 +1116,7 @@ def grafico_gex(d, altura=340):
     return tema(fig, altura)
 
 
-def cartoes_do_ativo(d):
-    cols = st.columns(6)
+def cartoes_do_ativo(d, mobile=False):
     va = d["vwap_atual"]
     if va:
         difp = (d["spot"] - va) / va * 100
@@ -982,18 +1130,6 @@ def cartoes_do_ativo(d):
         vcls, vsub = "", ""
     ncls = ("verde" if d["net_acum"] > 0 else
             "vermelho" if d["net_acum"] < 0 else "")
-    cols[0].markdown(cartao("Spot", f"{d['spot']:.2f}"),
-                     unsafe_allow_html=True)
-    cols[1].markdown(cartao("VWAP", f"{va:.2f}" if va else "—", vsub, vcls),
-                     unsafe_allow_html=True)
-    cols[2].markdown(cartao("Call Wall", f"{d['cw']:.0f}" if d["cw"] else "—",
-                            f"{(d['cw']-d['spot'])/d['spot']*100:+.2f}%"
-                            if d["cw"] else "", "verde"),
-                     unsafe_allow_html=True)
-    cols[3].markdown(cartao("Put Wall", f"{d['pw']:.0f}" if d["pw"] else "—",
-                            f"{(d['pw']-d['spot'])/d['spot']*100:+.2f}%"
-                            if d["pw"] else "", "vermelho"),
-                     unsafe_allow_html=True)
     if d["flip"]:
         flip_txt = f"{d['flip']:.0f}"
         flip_sub = ("regime positivo" if d["spot"] > d["flip"]
@@ -1003,10 +1139,25 @@ def cartoes_do_ativo(d):
             "banda +" if d["dominio"] == "pos" else "—")
         flip_sub = ("negativo dominante" if d["dominio"] == "neg" else
                     "positivo dominante" if d["dominio"] == "pos" else "")
-    cols[4].markdown(cartao("Gamma Flip", flip_txt, flip_sub),
-                     unsafe_allow_html=True)
-    cols[5].markdown(cartao("Net Premium", fmt_usd(d["net_acum"]),
-                            "sessão", ncls), unsafe_allow_html=True)
+
+    itens = [
+        ("Spot", f"{d['spot']:.2f}", "", ""),
+        ("VWAP", f"{va:.2f}" if va else "—", vsub, vcls),
+        ("Call Wall", f"{d['cw']:.0f}" if d["cw"] else "—",
+         f"{(d['cw']-d['spot'])/d['spot']*100:+.2f}%" if d["cw"] else "",
+         "verde"),
+        ("Put Wall", f"{d['pw']:.0f}" if d["pw"] else "—",
+         f"{(d['pw']-d['spot'])/d['spot']*100:+.2f}%" if d["pw"] else "",
+         "vermelho"),
+        ("Gamma Flip", flip_txt, flip_sub, ""),
+        ("Net Premium", fmt_usd(d["net_acum"]), "sessão", ncls),
+    ]
+    # Celular: 2 linhas de 3 cartões (cabem na tela); desktop: 1 linha de 6.
+    grupos = [itens[:3], itens[3:]] if mobile else [itens]
+    for grupo in grupos:
+        cols = st.columns(len(grupo))
+        for c, (rot, val, sub, cls) in zip(cols, grupo):
+            c.markdown(cartao(rot, val, sub, cls), unsafe_allow_html=True)
 
 
 # ----------------------------------------------------------------------------
@@ -1046,12 +1197,79 @@ selo = {"aberto": "<span class='selo selo-aberto'>● MERCADO ABERTO</span>",
         "fechado": "<span class='selo selo-fechado'>● MERCADO FECHADO</span>"
         }[ESTADO]
 
+# ----------------------------------------------------------------------------
+# MENTOR DE DISCIPLINA — regras escritas pelo próprio operador.
+# Uma por dia (rotação) + botão para ver todas. Trade é técnica + emocional.
+# ----------------------------------------------------------------------------
+
+MENSAGENS_DISCIPLINA = [
+    "Se chegar no seu limite de loss diário, DESLIGA. Não tente reverter: "
+    "você sai da estratégia e vira jogador de sorte e azar. Não seja "
+    "infantil — isso aqui é uma empresa, leve a sério. Amanhã tem mais.",
+    "Não seja ganancioso. Constância é o segredo. Você sempre perdeu por "
+    "ganância.",
+    "Não adianta operar contra o mercado.",
+    "Mover o stop para baixo ou para cima porque 'acha que o mercado vai "
+    "recuperar' é a fórmula exata para perder todas as suas contas. Não "
+    "seja idiota!",
+    "Aceite a dor da perda. Desliga o PC e aceita a dor. Vai malhar, fazer "
+    "outra coisa. Não tente recuperar.",
+    "Não opere alavancado — isso quebra a sua conta em um ou dois trades. "
+    "Faça regras para aguentar perder 15 dias seguidos sem perder a conta. "
+    "Sem conta, amanhã você está fudido.",
+    "Sacar faz bem para a alma. De preferência, saque no caixa eletrônico e "
+    "veja a materialização do que conquistou. Compre roupas novas, vá a um "
+    "bom restaurante — e lembre: você venceu porque NÃO saiu da estratégia "
+    "e NÃO foi ganancioso.",
+    "Perder faz parte. Você é um pequeno trader num mercado que movimenta "
+    "trilhões de dólares. Deixa de ser infantil.",
+    "Você não vai ficar rico da noite para o dia no trade. Talvez nunca "
+    "fique — mas pode viver confortável.",
+    "Pare de ficar ansioso, clicando igual um maluco. Overtrading é excesso "
+    "de negociação sem fundamento: gera custo alto e MUITO prejuízo. Se "
+    "quiser ser idiota, separe uma conta para isso — não alimente essa "
+    "sensação na conta séria.",
+    "Trade não é pirâmide, não é bet, não é cassino. É técnica pura + "
+    "emocional.",
+    "Perdeu? Não ponha a culpa na família nem na estratégia.",
+    "90% das pessoas perdem: não têm disciplina, não têm estratégia e ficam "
+    "se sabotando.",
+    "Opere pequeno SEMPRE. Não perca sua fonte de renda. O segredo é "
+    "múltiplas contas.",
+    "No trade o dinheiro muda de mão: sai de alguém para você. Fique "
+    "focado, sem ganância, que o dinheiro do operador que está na Ásia vem "
+    "para você. Seja mais esperto que eles!",
+]
+
+
+def mentor_disciplina():
+    """Banner com a regra de disciplina do dia + expander com todas."""
+    idx = pd.Timestamp.now().dayofyear % len(MENSAGENS_DISCIPLINA)
+    msg = MENSAGENS_DISCIPLINA[idx]
+    st.markdown(
+        f"<div style='background:#1a1406;border-left:3px solid #fbbf24;"
+        f"border-radius:6px;padding:8px 14px;margin:2px 0 8px 0;"
+        f"color:#e6edf3;font-size:0.85rem;'>"
+        f"<span style='color:#fbbf24;font-weight:700;'>🧭 DISCIPLINA · </span>"
+        f"{msg}</div>", unsafe_allow_html=True)
+    with st.expander("Ver todas as regras de disciplina"):
+        for m in MENSAGENS_DISCIPLINA:
+            st.markdown(f"- {m}")
+
+
+# ---- Taxa de juros (Fase 1.7): automática via ^IRX, manual de reserva ----
+R_AUTO = taxa_juros_automatica() if USAR_R_AUTO else None
+TAXA_JUROS = R_AUTO if R_AUTO else TAXA_MANUAL
+origem_r = "auto ^IRX" if R_AUTO else "manual"
+
 st.markdown(f"## PrumoQuant — Fluxo de Opções &nbsp; {selo}",
             unsafe_allow_html=True)
 st.caption(f"NY {agora_ny:%H:%M} · Brasília {agora_br:%H:%M} · abertura "
            f"9:30 NY · atualização a cada "
            f"{'30 s (janela quente)' if janela_quente else '60 s'} · dados "
-           f"atrasados ~15 min (yfinance)")
+           f"atrasados ~15 min (yfinance) · r {TAXA_JUROS*100:.2f}% "
+           f"({origem_r})")
+mentor_disciplina()
 
 tickers = ["SPY", "QQQ"] if MODO_VISAO.startswith("SPY") else [TICKER_UNICO]
 dados = {}
@@ -1063,6 +1281,10 @@ for tk_ in tickers:
 if not dados:
     st.warning("Sem dados de opções no momento. Nova tentativa automática.")
     st.stop()
+
+# ---- VETO SPY×QQQ (Fase 1.5): SPY dá a permissão, QQQ é o gatilho ----
+if "SPY" in dados and "QQQ" in dados:
+    aplicar_veto_spy_qqq(dados["SPY"], dados["QQQ"])
 
 janela_abertura = (ESTADO == "pre" or
                    (ESTADO == "aberto" and t_ny < dtime(9, 45)))
@@ -1083,8 +1305,27 @@ if len(dados) == 1:
                                       d["pw"], d["flip"], d["dominio"], sc,
                                       gap, agora_ny), unsafe_allow_html=True)
 
-    ce, cd = st.columns([3, 2])
-    with ce:
+    if MODO_CELULAR:
+        # ---- Layout celular: tudo empilhado, gamma na horizontal ----
+        st.plotly_chart(grafico_gex(d, 560, horizontal=True),
+                        use_container_width=True)
+        if ESTADO != "aberto":
+            st.info("Fluxo pausado (fora do pregão). Opções não negociam "
+                    "no pré-mercado.")
+        f4 = go.Figure()
+        f4.add_scatter(x=d["hist"].index, y=d["hist"]["Close"], name="Preço",
+                       line=dict(color="#eab308", width=1.6))
+        f4.add_scatter(x=d["idx_vwap"], y=d["vwap"], name="VWAP",
+                       line=dict(color="#a78bfa", width=1.6))
+        f4.update_layout(title="Intradiário (com pré/pós): preço x VWAP")
+        st.plotly_chart(tema(f4, 260), use_container_width=True)
+        st.caption("Modo celular: gráficos completos de fluxo disponíveis "
+                   "no desktop.")
+        ce = cd = None
+    else:
+        ce, cd = st.columns([3, 2])
+    if ce is not None:
+      with ce:
         st.plotly_chart(grafico_gex(d, 380), use_container_width=True)
         if len(d["serie"]) >= 2 and (d["bull_acum"] + d["bear_acum"]) > 0:
             df_f = pd.DataFrame(d["serie"])
@@ -1103,7 +1344,8 @@ if len(dados) == 1:
         else:
             st.info("Fluxo pausado (fora do pregão). Opções não negociam "
                     "no pré-mercado.")
-    with cd:
+    if cd is not None:
+      with cd:
         total = d["bull_acum"] + d["bear_acum"]
         if total > 0:
             rot = "Comprador" if d["net_acum"] >= 0 else "Vendedor"
@@ -1150,8 +1392,32 @@ if len(dados) == 1:
 
 # ---------------- MODO SPY + QQQ LADO A LADO ----------------
 else:
-    col_spy, col_qqq = st.columns(2)
-    for col, tk_ in ((col_spy, "SPY"), (col_qqq, "QQQ")):
+    if MODO_CELULAR:
+        # ---- Celular: um ativo abaixo do outro, gamma horizontal ----
+        for tk_ in ("SPY", "QQQ"):
+            d = dados.get(tk_)
+            if not d:
+                st.warning(f"Sem dados de {tk_} neste ciclo.")
+                continue
+            st.markdown(f"### {tk_}")
+            cartoes_do_ativo(d, mobile=True)
+            faixa_setup(d)
+            tabela_conversao(d)
+            if janela_abertura:
+                sc, gap = score_abertura(d["spot"], d["prev_close"],
+                                         d["flip"], d["cw"], d["pw"],
+                                         d["dominio"], d["hist"])
+                st.markdown(playbook_abertura(tk_, d["spot"],
+                                              d["prev_close"], d["cw"],
+                                              d["pw"], d["flip"],
+                                              d["dominio"], sc, gap,
+                                              agora_ny),
+                            unsafe_allow_html=True)
+            st.plotly_chart(grafico_gex(d, 520, horizontal=True),
+                            use_container_width=True)
+    else:
+      col_spy, col_qqq = st.columns(2)
+      for col, tk_ in ((col_spy, "SPY"), (col_qqq, "QQQ")):
         d = dados.get(tk_)
         if not d:
             col.warning(f"Sem dados de {tk_} neste ciclo.")
