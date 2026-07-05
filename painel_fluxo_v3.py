@@ -32,6 +32,13 @@
 #      Hedge Negativo) pela posição do preço frente às barras-chave, e
 #      narra gatilho/alvo/invalidação. Exibido em banner no topo e no
 #      playbook. Rótulos das barras no gráfico melhorados (legibilidade).
+#   9. REFINO S2: distingue "iminente" (preço colado na 1ª barra−, banner
+#      amarelo, aguardar) de "confirmado" (preço abaixo com margem). Evita
+#      chamar de rompimento um simples toque na barra.
+#  10. FASE 1.6 — CALCULADORA DE CONVERSÃO: converte os níveis do ETF
+#      (SPY/QQQ) para o futuro (ES/NQ) usando a razão calculada AO VIVO
+#      (basis = preço do futuro ÷ preço do ETF). Tabela com spot, muros e
+#      flip já no preço do futuro, para operar na corretora.
 #
 # HONESTIDADE TÉCNICA (não remover):
 #   - Dados yfinance: gratuitos e ATRASADOS (~15 min em opções); open
@@ -106,6 +113,11 @@ MODO_VISAO = st.sidebar.radio("Modo de visão",
 TICKER_UNICO = st.sidebar.selectbox("Ativo (modo um ativo)", ["SPY", "QQQ"])
 TAXA_JUROS = st.sidebar.number_input("Taxa de juros anual (r)", value=0.05,
                                      step=0.005, format="%.3f")
+st.sidebar.markdown("---")
+MOSTRAR_FUTUROS = st.sidebar.checkbox(
+    "Converter níveis para futuros (ES/NQ)", value=True,
+    help="Mostra os muros e alvos já convertidos para o preço do futuro "
+         "correspondente, para operar na corretora.")
 st.sidebar.caption("Ferramenta de ESTUDO. Dados gratuitos/atrasados "
                    "(yfinance). Não é recomendação de investimento.")
 
@@ -163,7 +175,39 @@ def buscar_dados(ticker):
     return hist, prev_close, cadeia.calls.copy(), cadeia.puts.copy(), venc
 
 
-def calcular_vwap(hist):
+@st.cache_data(ttl=60, show_spinner=False)
+def razao_futuro(ticker, spot_etf):
+    """
+    CALCULADORA DE CONVERSÃO (Fase 1.6).
+
+    Converte níveis do ETF (SPY/QQQ) para o futuro correspondente
+    (ES/NQ), que é onde o usuário de fato opera. A razão NÃO é fixa —
+    varia com dividendos e juros (o 'basis') — então a calculamos ao
+    vivo, dividindo o preço real do futuro pelo preço do ETF.
+
+    Ex.: se ES=F está 7460 e SPY está 745, a razão é ~10,01. Um muro
+    em 742 no SPY vira 742 × 10,01 ≈ 7427 no ES.
+
+    Retorna (nome_futuro, nome_micro, razao) ou (None, None, None) se
+    o preço do futuro não estiver disponível.
+    """
+    mapa = {
+        "SPY": ("ES=F", "ES / MES", "S&P 500"),
+        "QQQ": ("NQ=F", "NQ / MNQ", "Nasdaq 100"),
+    }
+    if ticker not in mapa or not spot_etf:
+        return None, None, None
+    simbolo, nome, _ = mapa[ticker]
+    try:
+        fut = yf.Ticker(simbolo).history(period="1d", interval="1m",
+                                         prepost=True)
+        if fut.empty:
+            return None, None, None
+        preco_fut = float(fut["Close"].iloc[-1])
+        razao = preco_fut / spot_etf
+        return nome, preco_fut, razao
+    except Exception:
+        return None, None, None
     """VWAP apenas da sessão regular (9h30–16h NY); pré-mercado fora."""
     mask = [(t.time() >= dtime(9, 30)) and (t.time() <= dtime(16, 0))
             for t in hist.index]
@@ -361,11 +405,29 @@ def detectar_setup(barras, spot, flip, dominio, cw, pw):
                 "forçarem continuação. Confirmar com SPY na última barra+.")
 
     # ---- S2: Rompimento Baixista (o mais perigoso) ----
+    # Distinção importante: "testando/iminente" (preço a centavos da 1ª
+    # barra negativa, ainda encostado) NÃO é o mesmo que "confirmado"
+    # (preço claramente abaixo). O método exige rompimento com margem,
+    # não um toque. Usamos 0,15% de folga como fronteira.
     if pn and spot < pn:
+        margem = (pn - spot) / spot  # quão abaixo da 1ª negativa
+        if margem < 0.0015:
+            return dict(
+                codigo="S2", nome="Rompimento Baixista (IMINENTE)",
+                status="iminente", vies="VENDEDOR — aguardar confirmação",
+                gatilho=f"preço colado na 1ª barra− ({pn:.0f}), ainda sem "
+                        f"rompimento confirmado (margem {margem*100:.2f}%)",
+                alvo=f"{mn:.0f} (maior barra−) SE confirmar" if mn
+                     else "próximo suporte",
+                invalidacao=f"voltar a se firmar acima de {pn:.0f}",
+                obs="NÃO é rompimento ainda — o preço está testando. Esperar "
+                    "fechamento abaixo COM o SPY também perdendo o nível. "
+                    "Entrar aqui é antecipar um movimento não confirmado.")
         return dict(
             codigo="S2", nome="Rompimento Baixista",
-            vies="VENDEDOR (aceleração)",
-            gatilho=f"preço perdeu a 1ª barra− ({pn:.0f})",
+            status="confirmado", vies="VENDEDOR (aceleração)",
+            gatilho=f"preço abaixo da 1ª barra− ({pn:.0f}), "
+                    f"margem {margem*100:.2f}%",
             alvo=f"{mn:.0f} (maior barra−)" if mn else "próximo suporte",
             invalidacao=f"retomar acima de {pn:.0f}",
             obs="O MAIS PERIGOSO: o dealer ainda pode estar defendendo. "
@@ -728,11 +790,15 @@ def faixa_setup(d):
     if not s:
         return
     cod = s["codigo"]
+    status = s.get("status", "")
     if cod == "—":
         cor_borda, cor_texto, fundo = "#374151", "#9ca3af", "#131a22"
+    elif status == "iminente":
+        # Setup se formando mas não confirmado → amarelo (aguardar)
+        cor_borda, cor_texto, fundo = "#92400e", "#fbbf24", "#422006"
     elif "COMPRADOR" in s["vies"]:
         cor_borda, cor_texto, fundo = "#14532d", "#22c55e", "#052e16"
-    elif "VENDEDOR" in s["vies"]:
+    elif "VENDEDOR" in s["vies"] and "aguardar" not in s["vies"]:
         cor_borda, cor_texto, fundo = "#7f1d1d", "#f87171", "#450a0a"
     else:
         cor_borda, cor_texto, fundo = "#92400e", "#fbbf24", "#422006"
@@ -745,6 +811,53 @@ def faixa_setup(d):
         f"<span style='color:#8b98a5;font-size:0.85rem;'> &nbsp;·&nbsp; "
         f"viés {s['vies']} &nbsp;·&nbsp; alvo: {s['alvo']}</span></div>",
         unsafe_allow_html=True)
+
+
+def tabela_conversao(d):
+    """
+    Tabela de conversão dos níveis-chave para o futuro (Fase 1.6).
+    Mostra spot, muros, flip e alvos do setup já no preço do ES/NQ,
+    para o usuário operar direto na corretora.
+    """
+    razao = d.get("fut_razao")
+    if not razao or not d.get("fut_nome"):
+        return
+    spot = d["spot"]
+    nome = d["fut_nome"]
+
+    def conv(v):
+        return v * razao if v else None
+
+    linhas = [("Spot", spot)]
+    if d["cw"]:
+        linhas.append(("Call Wall (resistência)", d["cw"]))
+    if d["pw"]:
+        linhas.append(("Put Wall (suporte)", d["pw"]))
+    if d["flip"]:
+        linhas.append(("Gamma Flip", d["flip"]))
+
+    html = (f"<div style='background:#131a22;border:1px solid #1f2937;"
+            f"border-radius:10px;padding:12px 16px;margin:6px 0;'>"
+            f"<div style='color:#8b98a5;font-size:0.72rem;letter-spacing:1px;"
+            f"text-transform:uppercase;margin-bottom:6px;'>"
+            f"Conversão para {nome} &nbsp;·&nbsp; razão {razao:.3f} "
+            f"&nbsp;·&nbsp; futuro em {d['fut_preco']:.2f}</div>"
+            f"<table style='width:100%;font-size:0.85rem;color:#e6edf3;"
+            f"border-collapse:collapse;'>"
+            f"<tr style='color:#8b98a5;font-size:0.72rem;'>"
+            f"<td>Nível</td><td style='text-align:right;'>{d['ticker']}</td>"
+            f"<td style='text-align:right;'>{nome.split(' / ')[0]}</td></tr>")
+    for rot, val in linhas:
+        html += (f"<tr><td style='padding:2px 0;'>{rot}</td>"
+                 f"<td style='text-align:right;font-variant-numeric:"
+                 f"tabular-nums;'>{val:.2f}</td>"
+                 f"<td style='text-align:right;font-variant-numeric:"
+                 f"tabular-nums;color:#fbbf24;'>{conv(val):.2f}</td></tr>")
+    html += ("</table><div style='color:#6b7280;font-size:0.72rem;"
+             "margin-top:6px;'>Razão calculada ao vivo (basis = futuro ÷ "
+             "ETF); varia com dividendos/juros. Estudo, não recomendação."
+             "</div></div>")
+    st.markdown(html, unsafe_allow_html=True)
 
 
 def tema(fig, altura):
@@ -769,6 +882,8 @@ def processar(ticker, acumular_fluxo):
     por_strike, cw, pw, flip, dominio, venc_hoje, barras = calcular_gex(
         calls, puts, spot, venc, TAXA_JUROS)
     setup = detectar_setup(barras, spot, flip, dominio, cw, pw)
+    fut_nome, fut_preco, fut_razao = (razao_futuro(ticker, spot)
+                                      if MOSTRAR_FUTUROS else (None, None, None))
     ultimo = hist.index[-1]
     atraso = (pd.Timestamp.now(tz=ultimo.tz) - ultimo).total_seconds() / 60
     serie, strikes = estimar_fluxo(calls, puts, ticker, acumular_fluxo)
@@ -778,6 +893,7 @@ def processar(ticker, acumular_fluxo):
                 por_strike=por_strike, cw=cw, pw=pw, flip=flip,
                 dominio=dominio, venc=venc, venc_hoje=venc_hoje,
                 barras=barras, setup=setup, ultimo=ultimo, atraso=atraso,
+                fut_nome=fut_nome, fut_preco=fut_preco, fut_razao=fut_razao,
                 serie=serie, strikes=strikes, net_acum=na,
                 bull_acum=num(serie[-1]["bull_acum"]) if serie else 0.0,
                 bear_acum=num(serie[-1]["bear_acum"]) if serie else 0.0)
@@ -792,31 +908,36 @@ def grafico_gex(d, altura=340):
                               for g in faixa["gex"]])
     fig.add_vline(x=d["spot"], line_dash="dot", line_color="#e6edf3",
                   annotation_text=f"Spot {d['spot']:.2f}",
+                  annotation_position="top",
                   annotation_font_color="#e6edf3")
     if d["cw"]:
         fig.add_vline(x=d["cw"], line_color="#22c55e",
                       annotation_text="Call Wall",
+                      annotation_position="bottom left",
                       annotation_font_color="#22c55e")
     if d["pw"]:
         fig.add_vline(x=d["pw"], line_color="#ef4444",
                       annotation_text="Put Wall",
+                      annotation_position="bottom right",
                       annotation_font_color="#ef4444")
     if d["flip"]:
         fig.add_vline(x=d["flip"], line_dash="dash", line_color="#eab308",
                       annotation_text="Flip",
+                      annotation_position="bottom",
                       annotation_font_color="#eab308")
 
     # -------- Marcação das 6 barras-chave (Fase 1.1) --------
-    # Rótulos curtos posicionados no topo (positivas) ou base (negativas)
-    # da barra correspondente. Ajudam a "ler a geometria" dos 6 setups.
+    # Rótulos curtos no topo (positivas) ou base (negativas) da barra.
+    # Nomes dos muros ficam na BASE do gráfico e as barras-chave no TOPO,
+    # em planos separados, para não se sobreporem.
     barras = d.get("barras") or {}
     rotulos = {
-        "primeira_pos": ("1ª+", "#4ade80"),
-        "maior_pos":    ("⌀+ ímã", "#22c55e"),
-        "ultima_pos":   ("últ+", "#4ade80"),
-        "primeira_neg": ("1ª−", "#60a5fa"),
-        "maior_neg":    ("⌀− alvo", "#3b82f6"),
-        "ultima_neg":   ("últ−", "#60a5fa"),
+        "primeira_pos": ("1+", "#4ade80"),
+        "maior_pos":    ("MÁX+", "#22c55e"),
+        "ultima_pos":   ("ú+", "#4ade80"),
+        "primeira_neg": ("1−", "#60a5fa"),
+        "maior_neg":    ("MÁX−", "#3b82f6"),
+        "ultima_neg":   ("ú−", "#60a5fa"),
     }
     ps = d["por_strike"]
     for chave, (txt, cor) in rotulos.items():
@@ -949,6 +1070,7 @@ if len(dados) == 1:
     t = d["ticker"]
     cartoes_do_ativo(d)
     faixa_setup(d)
+    tabela_conversao(d)
     st.markdown("")
 
     if janela_abertura:
@@ -1035,6 +1157,7 @@ else:
             st.markdown(f"### {tk_}")
             cartoes_do_ativo(d)
             faixa_setup(d)
+            tabela_conversao(d)
             if janela_abertura:
                 sc, gap = score_abertura(d["spot"], d["prev_close"],
                                          d["flip"], d["cw"], d["pw"],
