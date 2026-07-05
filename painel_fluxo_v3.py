@@ -23,6 +23,9 @@
 #      painel avisa no gráfico e no playbook que parte do open interest
 #      pode já estar liquidada e a curva envelhece rápido (o OI do
 #      yfinance só atualiza 1x/dia).
+#   7. FASE 1.1 — BARRAS-CHAVE: identifica e marca as 6 barras-chave do
+#      Delta-Hedging (primeira/maior/última, positiva e negativa) no
+#      gráfico e no playbook. É a fundação para detectar os 6 setups.
 #
 # HONESTIDADE TÉCNICA (não remover):
 #   - Dados yfinance: gratuitos e ATRASADOS (~15 min em opções); open
@@ -224,7 +227,59 @@ def calcular_gex(calls, puts, spot, venc_str, r):
     except Exception:
         venc_hoje = False
 
-    return por_strike, call_wall, put_wall, flip, dominio, venc_hoje
+    # -------- BARRAS-CHAVE (Fase 1.1) --------
+    barras = identificar_barras_chave(por_strike, spot)
+
+    return por_strike, call_wall, put_wall, flip, dominio, venc_hoje, barras
+
+
+def identificar_barras_chave(por_strike, spot):
+    """
+    Identifica as 6 barras-chave do Delta-Hedging, conforme o método:
+
+    Lado POSITIVO (gamma+, zonas ímã / estabilizadoras):
+      - primeira+ : positiva mais próxima do preço → linha de defesa/flip
+      - maior+    : maior barra positiva → o "ímã do dia" (vira suporte
+                    se rompida por cima)
+      - última+   : positiva mais distante acima → exaustão da alta
+
+    Lado NEGATIVO (gamma−, zonas de aceleração):
+      - primeira− : negativa mais próxima do preço → a mais defendida
+                    pelo dealer (ele evita hedge agressivo aqui)
+      - maior−    : maior barra negativa (em módulo) → alvo da aceleração
+      - última−   : negativa mais distante abaixo → exaustão da queda
+
+    "Relevância" já vem garantida pelo Filtro A (chuvisco removido antes).
+    Retorna dicionário {rótulo: strike} apenas com o que existir.
+    """
+    b = {}
+    if por_strike is None or por_strike.empty:
+        return b
+
+    pos = por_strike[por_strike["gex"] > 0].copy()
+    neg = por_strike[por_strike["gex"] < 0].copy()
+
+    # ----- Lado positivo -----
+    if not pos.empty:
+        # Maior positiva (ímã): maior valor de GEX
+        b["maior_pos"] = float(pos.loc[pos["gex"].idxmax(), "strike"])
+        # Primeira positiva: a positiva de strike mais próximo do preço
+        pos["dist"] = (pos["strike"] - spot).abs()
+        b["primeira_pos"] = float(pos.loc[pos["dist"].idxmin(), "strike"])
+        # Última positiva: a positiva de maior strike (topo da faixa +)
+        b["ultima_pos"] = float(pos["strike"].max())
+
+    # ----- Lado negativo -----
+    if not neg.empty:
+        # Maior negativa (alvo): GEX mais negativo (menor valor)
+        b["maior_neg"] = float(neg.loc[neg["gex"].idxmin(), "strike"])
+        # Primeira negativa: a negativa de strike mais próximo do preço
+        neg["dist"] = (neg["strike"] - spot).abs()
+        b["primeira_neg"] = float(neg.loc[neg["dist"].idxmin(), "strike"])
+        # Última negativa: a negativa de menor strike (fundo da faixa −)
+        b["ultima_neg"] = float(neg["strike"].min())
+
+    return b
 
 
 def estimar_fluxo(calls, puts, ticker, acumular):
@@ -423,6 +478,29 @@ def gerar_playbook(t, d, agora_local):
         L.append(f"MUROS .......: call wall {cw:.0f} "
                  f"({(cw-spot)/spot*100:+.2f}%) | put wall {pw:.0f} "
                  f"({(pw-spot)/spot*100:+.2f}%)")
+
+        # ----- Mapa das barras-chave (Fase 1.1) -----
+        barras = d.get("barras") or {}
+        if barras:
+            def linha_barra(rot, chave):
+                s = barras.get(chave)
+                if s is None:
+                    return None
+                return f"{rot} {s:.0f} ({(s-spot)/spot*100:+.2f}%)"
+            positivas = [x for x in (
+                linha_barra("1ª+", "primeira_pos"),
+                linha_barra("maior+", "maior_pos"),
+                linha_barra("últ+", "ultima_pos")) if x]
+            negativas = [x for x in (
+                linha_barra("1ª−", "primeira_neg"),
+                linha_barra("maior−", "maior_neg"),
+                linha_barra("últ−", "ultima_neg")) if x]
+            if positivas:
+                L.append("BARRAS + ....: " + "  |  ".join(positivas)
+                         + "  (ímã/estabiliza)")
+            if negativas:
+                L.append("BARRAS − ....: " + "  |  ".join(negativas)
+                         + "  (acelera)")
         L.append("")
         L.append("<span class='titulo'>CENÁRIOS (estudo, não recomendação)"
                  "</span>")
@@ -527,7 +605,7 @@ def processar(ticker, acumular_fluxo):
     spot = float(hist["Close"].iloc[-1])
     idx_vwap, vwap = calcular_vwap(hist)
     vwap_atual = float(vwap.iloc[-1]) if not vwap.dropna().empty else None
-    por_strike, cw, pw, flip, dominio, venc_hoje = calcular_gex(
+    por_strike, cw, pw, flip, dominio, venc_hoje, barras = calcular_gex(
         calls, puts, spot, venc, TAXA_JUROS)
     ultimo = hist.index[-1]
     atraso = (pd.Timestamp.now(tz=ultimo.tz) - ultimo).total_seconds() / 60
@@ -537,7 +615,7 @@ def processar(ticker, acumular_fluxo):
                 idx_vwap=idx_vwap, vwap=vwap, vwap_atual=vwap_atual,
                 por_strike=por_strike, cw=cw, pw=pw, flip=flip,
                 dominio=dominio, venc=venc, venc_hoje=venc_hoje,
-                ultimo=ultimo, atraso=atraso,
+                barras=barras, ultimo=ultimo, atraso=atraso,
                 serie=serie, strikes=strikes, net_acum=na,
                 bull_acum=num(serie[-1]["bull_acum"]) if serie else 0.0,
                 bear_acum=num(serie[-1]["bear_acum"]) if serie else 0.0)
@@ -565,6 +643,38 @@ def grafico_gex(d, altura=340):
         fig.add_vline(x=d["flip"], line_dash="dash", line_color="#eab308",
                       annotation_text="Flip",
                       annotation_font_color="#eab308")
+
+    # -------- Marcação das 6 barras-chave (Fase 1.1) --------
+    # Rótulos curtos posicionados no topo (positivas) ou base (negativas)
+    # da barra correspondente. Ajudam a "ler a geometria" dos 6 setups.
+    barras = d.get("barras") or {}
+    rotulos = {
+        "primeira_pos": ("1ª+", "#4ade80"),
+        "maior_pos":    ("⌀+ ímã", "#22c55e"),
+        "ultima_pos":   ("últ+", "#4ade80"),
+        "primeira_neg": ("1ª−", "#60a5fa"),
+        "maior_neg":    ("⌀− alvo", "#3b82f6"),
+        "ultima_neg":   ("últ−", "#60a5fa"),
+    }
+    ps = d["por_strike"]
+    for chave, (txt, cor) in rotulos.items():
+        strike = barras.get(chave)
+        if strike is None:
+            continue
+        linha = ps[ps["strike"] == strike]
+        if linha.empty:
+            continue
+        valor = float(linha["gex"].iloc[0])
+        # Posiciona o rótulo um pouco além da ponta da barra:
+        acima = valor >= 0
+        fig.add_annotation(
+            x=strike, y=valor,
+            text=txt, showarrow=False,
+            yshift=12 if acima else -12,
+            font=dict(size=9, color=cor),
+            textangle=-90,
+        )
+
     aviso_0dte = "  ⚠ VENCE HOJE (0DTE)" if d.get("venc_hoje") else ""
     fig.update_layout(title=f"{d['ticker']} — Gamma por Strike "
                             f"(venc. {d['venc']}){aviso_0dte}")
