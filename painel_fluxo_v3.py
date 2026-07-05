@@ -26,6 +26,12 @@
 #   7. FASE 1.1 — BARRAS-CHAVE: identifica e marca as 6 barras-chave do
 #      Delta-Hedging (primeira/maior/última, positiva e negativa) no
 #      gráfico e no playbook. É a fundação para detectar os 6 setups.
+#   8. FASE 1.2 — MOTOR DOS 6 SETUPS: detecta qual setup do método está
+#      armado (S1 Rompimento Altista, S2 Rompimento Baixista, S3 Pullback
+#      no Topo, S4 Pullback no Fundo, S5 Consolidação, S6 Proteção no
+#      Hedge Negativo) pela posição do preço frente às barras-chave, e
+#      narra gatilho/alvo/invalidação. Exibido em banner no topo e no
+#      playbook. Rótulos das barras no gráfico melhorados (legibilidade).
 #
 # HONESTIDADE TÉCNICA (não remover):
 #   - Dados yfinance: gratuitos e ATRASADOS (~15 min em opções); open
@@ -282,6 +288,122 @@ def identificar_barras_chave(por_strike, spot):
     return b
 
 
+def detectar_setup(barras, spot, flip, dominio, cw, pw):
+    """
+    MOTOR DOS 6 SETUPS (Fase 1.2).
+
+    Recebe as barras-chave e a posição do preço e identifica qual dos 6
+    setups do método está ARMADO (ou nenhum claro). Retorna um dicionário:
+      {codigo, nome, vies, alvo, gatilho, invalidacao, obs}
+
+    Lógica (proximidade medida em % do preço; "colado" = < 0.15%):
+      S6 Proteção Hedge Negativo: preço testando a 1ª barra− (por cima),
+         com barras+ acima (ímãs). O mais assertivo — dealer defende.
+      S4 Pullback no Fundo: preço na última barra− (exaustão da queda).
+      S3 Pullback no Topo: preço na última barra+ (exaustão da alta).
+      S1 Rompimento Altista: preço acima do flip, ímã (maior+) acima.
+      S2 Rompimento Baixista: preço abaixo da 1ª barra− (perdeu o nível).
+      S5 Consolidação: preço entre maior+ acima e maior− abaixo (pinning).
+    Testados em ordem de prioridade; o primeiro que casar vence.
+    """
+    if not barras:
+        return None
+
+    def prox(strike):
+        return abs(spot - strike) / spot if strike else 9.9
+
+    def perto(strike, tol=0.0020):     # ~0,20%
+        return strike is not None and prox(strike) < tol
+
+    pp = barras.get("primeira_pos")
+    mp = barras.get("maior_pos")
+    up = barras.get("ultima_pos")
+    pn = barras.get("primeira_neg")
+    mn = barras.get("maior_neg")
+    un = barras.get("ultima_neg")
+
+    # ---- S6: Proteção no Hedge Negativo (mais assertivo) ----
+    # Preço testando a 1ª barra negativa por cima, com ímã(s) positivo(s)
+    # acima para dar suporte à defesa do dealer.
+    if pn and perto(pn) and spot >= pn and mp and mp > spot:
+        return dict(
+            codigo="S6", nome="Proteção no Hedge Negativo",
+            vies="COMPRADOR (bounce)",
+            gatilho=f"preço testando a 1ª barra− ({pn:.0f}) com ímã "
+                    f"positivo em {mp:.0f} acima",
+            alvo=f"{mp:.0f} (ímã) / retorno ao VWAP",
+            invalidacao=f"perder {pn:.0f} com fluxo vendedor (defesa falhou)",
+            obs="Setup mais assertivo: dealer defende agressivamente a "
+                "zona negativa. Confirmar defesa do SPY na mesma região.")
+
+    # ---- S4: Pullback no Fundo (exaustão da queda) ----
+    if un and perto(un) and spot <= (mn or un):
+        return dict(
+            codigo="S4", nome="Pullback no Fundo",
+            vies="COMPRADOR (bounce/reversão)",
+            gatilho=f"preço na última barra− ({un:.0f}) — exaustão da venda",
+            alvo=f"{mp:.0f} (ímã acima)" if mp else "VWAP / ímã acima",
+            invalidacao=f"aceitação abaixo de {un:.0f} (flush continua)",
+            obs="Movimento costuma ser rápido no início e estancar perto "
+                "do ímã. Confirmar exaustão no SPY.")
+
+    # ---- S3: Pullback no Topo (exaustão da alta) ----
+    if up and perto(up) and mp and mp < spot:
+        return dict(
+            codigo="S3", nome="Pullback no Topo",
+            vies="VENDEDOR (recuo ao ímã)",
+            gatilho=f"preço na última barra+ ({up:.0f}) com ímã em "
+                    f"{mp:.0f} abaixo",
+            alvo=f"{mp:.0f} (ímã abaixo)",
+            invalidacao=f"romper e sustentar acima de {up:.0f} "
+                        f"(continuação altista)",
+            obs="Reversão para o ímã inferior, salvo se instituições "
+                "forçarem continuação. Confirmar com SPY na última barra+.")
+
+    # ---- S2: Rompimento Baixista (o mais perigoso) ----
+    if pn and spot < pn:
+        return dict(
+            codigo="S2", nome="Rompimento Baixista",
+            vies="VENDEDOR (aceleração)",
+            gatilho=f"preço perdeu a 1ª barra− ({pn:.0f})",
+            alvo=f"{mn:.0f} (maior barra−)" if mn else "próximo suporte",
+            invalidacao=f"retomar acima de {pn:.0f}",
+            obs="O MAIS PERIGOSO: o dealer ainda pode estar defendendo. "
+                "EXIGE que o SPY também tenha perdido o nível. Proteja em "
+                "break-even assim que possível.")
+
+    # ---- S1: Rompimento Altista ----
+    if flip and spot > flip and mp and mp > spot:
+        return dict(
+            codigo="S1", nome="Rompimento Altista",
+            vies="COMPRADOR (continuação)",
+            gatilho=f"preço acima do flip ({flip:.0f}), ímã em {mp:.0f} acima",
+            alvo=f"{mp:.0f} (ímã)",
+            invalidacao=f"perder o flip ({flip:.0f}) de volta",
+            obs="Sobe nível a nível até o ímã. Exige SPY LIVRE na direção "
+                "(sem muro barrando acima).")
+
+    # ---- S5: Consolidação (pinning) ----
+    if mp and mn and mn < spot < mp:
+        # Preço espremido entre o maior ímã positivo acima e a maior
+        # barra negativa abaixo → tende a lateralizar.
+        return dict(
+            codigo="S5", nome="Consolidação (pinning)",
+            vies="NEUTRO — evitar",
+            gatilho=f"preço preso entre maior− ({mn:.0f}) e maior+ ({mp:.0f})",
+            alvo="sem alvo direcional (lateral)",
+            invalidacao=f"rompimento de {mp:.0f} (alta) ou {mn:.0f} (baixa)",
+            obs="Zona de 'pinning' que dilacera traders. Melhor EVITAR até "
+                "um rompimento claro com confirmação do SPY.")
+
+    return dict(
+        codigo="—", nome="Nenhum setup claro",
+        vies="NEUTRO / aguardar",
+        gatilho="preço não está numa geometria de setup definida",
+        alvo="—", invalidacao="—",
+        obs="Aguardar o preço se aproximar de uma barra-chave.")
+
+
 def estimar_fluxo(calls, puts, ticker, acumular):
     """Net premium estimado + fluxo por strike (fotografias de volume)."""
     k_snap, k_serie, k_strike = f"snap_{ticker}", f"serie_{ticker}", f"strikes_{ticker}"
@@ -502,6 +624,20 @@ def gerar_playbook(t, d, agora_local):
                 L.append("BARRAS − ....: " + "  |  ".join(negativas)
                          + "  (acelera)")
         L.append("")
+
+        # ----- SETUP DETECTADO (Fase 1.2) -----
+        s = d.get("setup")
+        if s and s["codigo"] != "—":
+            L.append(f"<span class='destaque'>▶ SETUP {s['codigo']} — "
+                     f"{s['nome'].upper()} · viés {s['vies']}</span>")
+            L.append(f"  gatilho .....: {s['gatilho']}")
+            L.append(f"  alvo ........: {s['alvo']}")
+            L.append(f"  invalidação .: {s['invalidacao']}")
+            L.append(f"  <span class='aviso'>{s['obs']}</span>")
+            L.append("")
+        elif s:
+            L.append(f"<span class='aviso'>▶ {s['nome']} — {s['obs']}</span>")
+            L.append("")
         L.append("<span class='titulo'>CENÁRIOS (estudo, não recomendação)"
                  "</span>")
         if abs(spot - cw) / spot < 0.0015:
@@ -586,6 +722,31 @@ def cartao(rotulo, valor, sub="", classe=""):
             f"<div class='sub'>{sub}</div></div>")
 
 
+def faixa_setup(d):
+    """Banner destacado do setup detectado, para leitura de relance."""
+    s = d.get("setup")
+    if not s:
+        return
+    cod = s["codigo"]
+    if cod == "—":
+        cor_borda, cor_texto, fundo = "#374151", "#9ca3af", "#131a22"
+    elif "COMPRADOR" in s["vies"]:
+        cor_borda, cor_texto, fundo = "#14532d", "#22c55e", "#052e16"
+    elif "VENDEDOR" in s["vies"]:
+        cor_borda, cor_texto, fundo = "#7f1d1d", "#f87171", "#450a0a"
+    else:
+        cor_borda, cor_texto, fundo = "#92400e", "#fbbf24", "#422006"
+    titulo = (f"SETUP {cod} — {s['nome']}" if cod != "—" else s["nome"])
+    st.markdown(
+        f"<div style='background:{fundo};border:1px solid {cor_borda};"
+        f"border-radius:10px;padding:10px 16px;margin:4px 0 10px 0;'>"
+        f"<span style='color:{cor_texto};font-weight:700;font-size:0.95rem;'>"
+        f"▶ {d['ticker']} · {titulo}</span>"
+        f"<span style='color:#8b98a5;font-size:0.85rem;'> &nbsp;·&nbsp; "
+        f"viés {s['vies']} &nbsp;·&nbsp; alvo: {s['alvo']}</span></div>",
+        unsafe_allow_html=True)
+
+
 def tema(fig, altura):
     fig.update_layout(template="plotly_dark", height=altura,
                       paper_bgcolor="#0b0f14", plot_bgcolor="#0f151c",
@@ -607,6 +768,7 @@ def processar(ticker, acumular_fluxo):
     vwap_atual = float(vwap.iloc[-1]) if not vwap.dropna().empty else None
     por_strike, cw, pw, flip, dominio, venc_hoje, barras = calcular_gex(
         calls, puts, spot, venc, TAXA_JUROS)
+    setup = detectar_setup(barras, spot, flip, dominio, cw, pw)
     ultimo = hist.index[-1]
     atraso = (pd.Timestamp.now(tz=ultimo.tz) - ultimo).total_seconds() / 60
     serie, strikes = estimar_fluxo(calls, puts, ticker, acumular_fluxo)
@@ -615,7 +777,7 @@ def processar(ticker, acumular_fluxo):
                 idx_vwap=idx_vwap, vwap=vwap, vwap_atual=vwap_atual,
                 por_strike=por_strike, cw=cw, pw=pw, flip=flip,
                 dominio=dominio, venc=venc, venc_hoje=venc_hoje,
-                barras=barras, ultimo=ultimo, atraso=atraso,
+                barras=barras, setup=setup, ultimo=ultimo, atraso=atraso,
                 serie=serie, strikes=strikes, net_acum=na,
                 bull_acum=num(serie[-1]["bull_acum"]) if serie else 0.0,
                 bear_acum=num(serie[-1]["bear_acum"]) if serie else 0.0)
@@ -665,14 +827,13 @@ def grafico_gex(d, altura=340):
         if linha.empty:
             continue
         valor = float(linha["gex"].iloc[0])
-        # Posiciona o rótulo um pouco além da ponta da barra:
         acima = valor >= 0
         fig.add_annotation(
             x=strike, y=valor,
             text=txt, showarrow=False,
-            yshift=12 if acima else -12,
-            font=dict(size=9, color=cor),
-            textangle=-90,
+            yshift=16 if acima else -16,
+            font=dict(size=11, color=cor, family="Consolas, monospace"),
+            bgcolor="rgba(11,15,20,0.7)",
         )
 
     aviso_0dte = "  ⚠ VENCE HOJE (0DTE)" if d.get("venc_hoje") else ""
@@ -787,6 +948,7 @@ if len(dados) == 1:
     d = list(dados.values())[0]
     t = d["ticker"]
     cartoes_do_ativo(d)
+    faixa_setup(d)
     st.markdown("")
 
     if janela_abertura:
@@ -872,6 +1034,7 @@ else:
         with col:
             st.markdown(f"### {tk_}")
             cartoes_do_ativo(d)
+            faixa_setup(d)
             if janela_abertura:
                 sc, gap = score_abertura(d["spot"], d["prev_close"],
                                          d["flip"], d["cw"], d["pw"],
