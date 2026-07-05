@@ -208,6 +208,9 @@ def razao_futuro(ticker, spot_etf):
         return nome, preco_fut, razao
     except Exception:
         return None, None, None
+
+
+def calcular_vwap(hist):
     """VWAP apenas da sessão regular (9h30–16h NY); pré-mercado fora."""
     mask = [(t.time() >= dtime(9, 30)) and (t.time() <= dtime(16, 0))
             for t in hist.index]
