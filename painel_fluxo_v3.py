@@ -15,6 +15,14 @@
 #      60 s no restante.
 #   4. Quando o GEX acumulado não cruza zero na banda ±10%, o painel
 #      informa o regime dominante (positivo/negativo em toda a banda).
+#   5. FILTRO A (limpeza de gamma): strikes com GEX abaixo de 1% do pico
+#      são descartados da curva — remove o "chuvisco" de open interest
+#      fantasma / opções muito fora do dinheiro, deixando muros e flip
+#      mais nítidos, sem perder nada relevante.
+#   6. FILTRO C (aviso 0DTE): quando o vencimento analisado é HOJE, o
+#      painel avisa no gráfico e no playbook que parte do open interest
+#      pode já estar liquidada e a curva envelhece rápido (o OI do
+#      yfinance só atualiza 1x/dia).
 #
 # HONESTIDADE TÉCNICA (não remover):
 #   - Dados yfinance: gratuitos e ATRASADOS (~15 min em opções); open
@@ -178,9 +186,23 @@ def calcular_gex(calls, puts, spot, venc_str, r):
 
     gex_df = pd.DataFrame(linhas)
     if gex_df.empty:
-        return gex_df, None, None, None, None
+        return gex_df, None, None, None, None, False
 
     por_strike = gex_df.groupby("strike")["gex"].sum().reset_index()
+
+    # -------- FILTRO A: recorte do "chuvisco" de gamma irrelevante --------
+    # Strikes cujo GEX é uma fração ínfima do maior GEX da curva não
+    # representam pressão real de hedge (open interest fantasma / opções
+    # muito fora do dinheiro). Descartamos os que ficam abaixo de 1% do
+    # pico absoluto — os muros e o flip ficam mais nítidos, sem perder
+    # nada relevante. É o "aumentar o contraste" da radiografia.
+    pico = por_strike["gex"].abs().max()
+    if pico > 0:
+        por_strike = por_strike[por_strike["gex"].abs() >= 0.01 * pico]
+    por_strike = por_strike.reset_index(drop=True)
+    if por_strike.empty:
+        return por_strike, None, None, None, None, False
+
     call_wall = por_strike.loc[por_strike["gex"].idxmax(), "strike"]
     put_wall = por_strike.loc[por_strike["gex"].idxmin(), "strike"]
 
@@ -193,7 +215,16 @@ def calcular_gex(calls, puts, spot, venc_str, r):
     else:
         flip, dominio = None, ("neg" if acum[-1] < 0 else "pos")
 
-    return por_strike, call_wall, put_wall, flip, dominio
+    # -------- FILTRO C: o vencimento analisado é HOJE? (0DTE) --------
+    # Se sim, parte do open interest pode já ter sido exercida/liquidada
+    # e o yfinance só atualiza o OI 1x/dia — a curva envelhece rápido.
+    try:
+        venc_hoje = (pd.Timestamp(venc_str).date()
+                     == pd.Timestamp.now().date())
+    except Exception:
+        venc_hoje = False
+
+    return por_strike, call_wall, put_wall, flip, dominio, venc_hoje
 
 
 def estimar_fluxo(calls, puts, ticker, acumular):
@@ -348,6 +379,13 @@ def gerar_playbook(t, d, agora_local):
         L.append(f"<span class='destaque'>[MERCADO FECHADO]</span> níveis do "
                  f"pregão de {d['data_sessao']} — leitura preparatória.")
     L.append("")
+    if d.get("venc_hoje"):
+        L.append("<span class='destaque'>⚠ VENCIMENTO HOJE (0DTE):</span> "
+                 "parte do open interest pode já ter sido exercida/liquidada "
+                 "e o dado do OI só atualiza 1x/dia — a curva de gamma "
+                 "envelhece rápido, sobretudo perto do fechamento. Tratar os "
+                 "muros com cautela extra hoje.")
+        L.append("")
     spot, flip, dominio = d["spot"], d["flip"], d["dominio"]
     if flip is not None:
         if spot > flip:
@@ -489,8 +527,8 @@ def processar(ticker, acumular_fluxo):
     spot = float(hist["Close"].iloc[-1])
     idx_vwap, vwap = calcular_vwap(hist)
     vwap_atual = float(vwap.iloc[-1]) if not vwap.dropna().empty else None
-    por_strike, cw, pw, flip, dominio = calcular_gex(calls, puts, spot, venc,
-                                                     TAXA_JUROS)
+    por_strike, cw, pw, flip, dominio, venc_hoje = calcular_gex(
+        calls, puts, spot, venc, TAXA_JUROS)
     ultimo = hist.index[-1]
     atraso = (pd.Timestamp.now(tz=ultimo.tz) - ultimo).total_seconds() / 60
     serie, strikes = estimar_fluxo(calls, puts, ticker, acumular_fluxo)
@@ -498,7 +536,8 @@ def processar(ticker, acumular_fluxo):
     return dict(ticker=ticker, hist=hist, prev_close=prev_close, spot=spot,
                 idx_vwap=idx_vwap, vwap=vwap, vwap_atual=vwap_atual,
                 por_strike=por_strike, cw=cw, pw=pw, flip=flip,
-                dominio=dominio, venc=venc, ultimo=ultimo, atraso=atraso,
+                dominio=dominio, venc=venc, venc_hoje=venc_hoje,
+                ultimo=ultimo, atraso=atraso,
                 serie=serie, strikes=strikes, net_acum=na,
                 bull_acum=num(serie[-1]["bull_acum"]) if serie else 0.0,
                 bear_acum=num(serie[-1]["bear_acum"]) if serie else 0.0)
@@ -526,8 +565,9 @@ def grafico_gex(d, altura=340):
         fig.add_vline(x=d["flip"], line_dash="dash", line_color="#eab308",
                       annotation_text="Flip",
                       annotation_font_color="#eab308")
+    aviso_0dte = "  ⚠ VENCE HOJE (0DTE)" if d.get("venc_hoje") else ""
     fig.update_layout(title=f"{d['ticker']} — Gamma por Strike "
-                            f"(venc. {d['venc']})")
+                            f"(venc. {d['venc']}){aviso_0dte}")
     fig.update_yaxes(tickformat="~s")
     return tema(fig, altura)
 
