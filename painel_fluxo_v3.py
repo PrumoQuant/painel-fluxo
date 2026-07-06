@@ -2,25 +2,10 @@
 # PAINEL DE FLUXO DE OPÇÕES — VERSÃO 3.4 "CALIBRAÇÃO DO FLUXO" (ESTUDO)
 # PrumoQuant · https://prumoquant.streamlit.app
 # ============================================================================
-# Novidades da v3.4 (calibração pós-pregão de 06/07/2026 — o dia em que o
-# nosso fluxo estimado divergiu do Volume Imbalance real da Quantico:
-# nosso SPY "55% vendedor" × deles "92% bullish" num rali de +1%):
-#  23. CLASSIFICAÇÃO POR TERÇOS DO SPREAD: antes, negócio abaixo do MEIO
-#      do spread contava como "vendido". No 0DTE o decaimento (theta)
-#      derruba os prêmios o dia inteiro e os prints ficam abaixo do meio
-#      mesmo com agressão COMPRADORA → viés vendedor sistemático. Agora:
-#      terço de cima do spread = comprado; terço de baixo = vendido; o
-#      MIOLO é ambíguo e é DESCARTADO. Perder volume é melhor do que
-#      classificar errado. (Solução definitiva = tick real na Fase 3 / Tradier.)
-#  24. JANELA RECENTE (~30 min) NA RÉGUA DE FLUXO, em LINGUAGEM SIMPLES:
-#      "instituições COMPRANDO agora / VENDENDO agora / em DISPUTA" —
-#      the accumulated total hides the afternoon reversal.
-#  25. LINHA "SINAL SIMPLES" DO PLAYBOOK (estilo Striking Bell):
-#      ação → alvo → desmonte, sem jargão.
-#
-# CONEXÃO REAL-TIME ATIVADA (TRADIER API):
+# CONEXÃO REAL-TIME ATIVADA E BLINDADA (TRADIER API):
 #  - Substituição completa do yfinance para dados de opções em tempo real.
-#  - Autenticação via Chave de Produção de Nova York (Dados LITE $0/mês).
+#  - Autenticação via Chave de Produção de Nova York (Dados LITE).
+#  - Timeout de 8s e tratamento antiqueda (evita travamento infinito).
 # ============================================================================
 
 import os
@@ -188,77 +173,98 @@ def gamma_bs(S, K, T, r, sigma):
     return norm.pdf(d1) / (S * sigma * np.sqrt(T))
 
 # ----------------------------------------------------------------------------
-# MOTOR DE CAPTURA TRADIER API (SUBSTITUTO DO YFINANCE OPTIONS)
+# MOTOR DE CAPTURA TRADIER API (BLINDADO CONTRA TRAVAMENTOS)
 # ----------------------------------------------------------------------------
 @st.cache_data(ttl=5, show_spinner=False)
 def buscar_dados(ticker):
     """
-    Mantém o histórico de preços intradiários pelo yfinance, mas puxa a cadeia 
-    de opções EM TEMPO REAL absoluto através da sua chave de Produção da Tradier.
+    Versão blindada contra travamentos e loops infinitos de carregamento.
+    Adiciona timeouts estritos e tratamento detalhado de erros da Tradier.
     """
-    tk = yf.Ticker(ticker)
-    hist = tk.history(period="1d", interval="1m", prepost=True)
+    try:
+        tk = yf.Ticker(ticker)
+        hist = tk.history(period="1d", interval="1m", prepost=True)
+        
+        prev_close = None
+        diario = tk.history(period="5d", interval="1d")
+        if not diario.empty:
+            hoje_ny = pd.Timestamp.now(tz=diario.index.tz).date()
+            if diario.index[-1].date() == hoje_ny and len(diario) >= 2:
+                prev_close = float(diario["Close"].iloc[-2])
+            else:
+                prev_close = float(diario["Close"].iloc[-1])
+    except Exception as e:
+        st.error(f"❌ Erro de conexão com Histórico (yfinance): {e}")
+        return pd.DataFrame(), None, None, None, None
 
-    # Preço de fechamento anterior para gaps
-    prev_close = None
-    diario = tk.history(period="5d", interval="1d")
-    if not diario.empty:
-        hoje_ny = pd.Timestamp.now(tz=diario.index.tz).date()
-        if diario.index[-1].date() == hoje_ny and len(diario) >= 2:
-            prev_close = float(diario["Close"].iloc[-2])
-        else:
-            prev_close = float(diario["Close"].iloc[-1])
-
-    # --- Puxar Opções via Tradier ---
-    url_venc = f"https://api.tradier.com/v1/markets/options/expirations"
+    url_venc = "https://api.tradier.com/v1/markets/options/expirations"
     headers = {"Authorization": f"Bearer {TRADIER_TOKEN}", "Accept": "application/json"}
     
     try:
-        # 1. Pega os vencimentos ativos
-        res_venc = requests.get(url_venc, params={"symbol": ticker.upper()}, headers=headers)
-        if res_venc.status_code != 200 or not res_venc.json().get("expirations"):
+        res_venc = requests.get(url_venc, params={"symbol": ticker.upper()}, headers=headers, timeout=8)
+        
+        if res_venc.status_code == 401:
+            st.error(f"🔑 **Erro Tradier (401 Unauthorized):** O Token configurado para o ativo {ticker} é inválido ou expirou. Verifique suas credenciais de Produção.")
+            return hist, prev_close, None, None, None
+        elif res_venc.status_code != 200:
+            st.error(f"📡 **Erro Tradier ({res_venc.status_code}):** Servidor recusou a busca de vencimentos para {ticker}.")
             return hist, prev_close, None, None, None
             
-        vencs = res_venc.json()["expirations"]["date"]
-        venc_atual = vencs[0] if isinstance(vencs, list) else vencs # Pega o 0DTE/Mais próximo
+        dados_venc = res_venc.json()
+        if not dados_venc or "expirations" not in dados_venc or dados_venc["expirations"] is None:
+            st.warning(f"⚠️ Nenhuma data de vencimento encontrada na Tradier para {ticker}.")
+            return hist, prev_close, None, None, None
+            
+        vencs = dados_venc["expirations"]["date"]
+        venc_atual = vencs[0] if isinstance(vencs, list) else vencs
 
-        # 2. Pega a cadeia de opções completa
         url_chain = "https://api.tradier.com/v1/markets/options/chains"
         params_chain = {"symbol": ticker.upper(), "expiration": venc_atual, "greeks": "true"}
-        res_chain = requests.get(url_chain, params=params_chain, headers=headers)
         
-        if res_chain.status_code == 200:
-            dados_opcoes = res_chain.json().get("options", {}).get("option", [])
-            df_completo = pd.DataFrame(dados_opcoes)
+        res_chain = requests.get(url_chain, params=params_chain, headers=headers, timeout=8)
+        
+        if res_chain.status_code != 200:
+            st.error(f"❌ Erro Tradier ao puxar Chain de {ticker}: Status {res_chain.status_code}")
+            return hist, prev_close, None, None, venc_atual
             
-            if df_completo.empty:
-                return hist, prev_close, None, None, venc_atual
+        json_data = res_chain.json()
+        if not json_data or "options" not in json_data or json_data["options"] is None:
+            return hist, prev_close, None, None, venc_atual
             
-            # Padronização Exata para manter compatível com os filtros e cálculos do seu código antigo
-            df_completo = df_completo.rename(columns={
-                'strike': 'strike',
-                'open_interest': 'openInterest',
-                'volume': 'volume',
-                'bid': 'bid',
-                'ask': 'ask',
-                'last': 'lastPrice',
-                'greeks': 'greeks'
-            })
+        dados_opcoes = json_data["options"].get("option", [])
+        
+        if isinstance(dados_opcoes, dict):
+            dados_opcoes = [dados_opcoes]
             
-            # Extrai volatilidade implícita calculada pela Tradier (se houver no nó) ou usa campo nativo
-            if 'greeks' in df_completo.columns:
-                df_completo['impliedVolatility'] = df_completo['greeks'].apply(lambda x: num(x.get('ask_iv')) if isinstance(x, dict) else 0.0)
-            else:
-                df_completo['impliedVolatility'] = df_completo.get('greeks.ask_iv', 0.2) 
+        df_completo = pd.DataFrame(dados_opcoes)
+        if df_completo.empty:
+            return hist, prev_close, None, None, venc_atual
+            
+        df_completo = df_completo.rename(columns={
+            'strike': 'strike',
+            'open_interest': 'openInterest',
+            'volume': 'volume',
+            'bid': 'bid',
+            'ask': 'ask',
+            'last': 'lastPrice'
+        })
+        
+        if 'greeks' in df_completo.columns:
+            df_completo['impliedVolatility'] = df_completo['greeks'].apply(
+                lambda x: num(x.get('ask_iv')) if isinstance(x, dict) else 0.2
+            )
+        else:
+            df_completo['impliedVolatility'] = 0.2
 
-            # Separa exatamente no formato das variáveis originais
-            calls = df_completo[df_completo["option_type"] == "call"].copy()
-            puts = df_completo[df_completo["option_type"] == "put"].copy()
-            
-            return hist, prev_close, calls, puts, venc_atual
-            
+        calls = df_completo[df_completo["option_type"] == "call"].copy()
+        puts = df_completo[df_completo["option_type"] == "put"].copy()
+        
+        return hist, prev_close, calls, puts, venc_atual
+        
+    except requests.exceptions.Timeout:
+        st.error(f"⏱️ **Tempo Limite Excedido:** A API da Tradier demorou demais para responder para {ticker}. Tentando reconectar no próximo ciclo.")
     except Exception as e:
-        st.error(f"Erro na comunicação com a API Tradier: {e}")
+        st.error(f"💥 Erro crítico no processamento dos dados da Tradier: {e}")
         
     return hist, prev_close, None, None, None
 
@@ -321,7 +327,6 @@ def calcular_gex(calls, puts, spot, venc_str, r):
     por_strike = gex_df.groupby("strike")["gex"].sum().reset_index()
     pico = por_strike["gex"].abs().max()
     
-    # FILTRO A (Anti-chuvisco)
     if pico > 0: por_strike = por_strike[por_strike["gex"].abs() >= 0.01 * pico]
     por_strike = por_strike.reset_index(drop=True)
     if por_strike.empty: return por_strike, None, None, None, None, False, {}
@@ -359,14 +364,7 @@ def identificar_barras_chave(por_strike, spot):
         b["ultima_neg"] = float(neg["strike"].min())
     return b
 
-# ----------------------------------------------------------------------------
-# ITEM 23: LOGICA DE CLASSIFICACAO DA CALIBRACAO POR TERÇOS DE SPREAD
-# ----------------------------------------------------------------------------
 def calcular_fluxo_institucional_v34(calls, puts):
-    """
-    Implementação da Regra de Calibração 23 (Terços do Spread).
-    Elimina o viés do decaimento (theta) limpando o miolo ambíguo do spread.
-    """
     total_comprado, total_vendido = 0.0, 0.0
     fluxo_por_strike = {}
 
@@ -382,28 +380,24 @@ def calcular_fluxo_institucional_v34(calls, puts):
             if vol <= 0 or bid >= ask or ultimo <= 0: continue
             
             spread = ask - bid
-            # Dividindo o spread em 3 partes iguais
             terco_baixo = bid + (spread / 3.0)
             terco_alto = ask - (spread / 3.0)
-            
             premium = ultimo * vol * 100
             
-            # Classificação por Terço de Fluxo Estrito
-            if ultimo >= terco_alto:  # Agressão na Compra (Terço Superior)
+            if ultimo >= terco_alto: 
                 if tipo_opcao == "call":
                     total_comprado += premium
                     fluxo_por_strike[k] = fluxo_por_strike.get(k, 0.0) + premium
                 else:
                     total_vendido += premium
                     fluxo_por_strike[k] = fluxo_por_strike.get(k, 0.0) - premium
-            elif ultimo <= terco_baixo:  # Agressão na Venda (Terço Inferior)
+            elif ultimo <= terco_baixo:
                 if tipo_opcao == "call":
                     total_vendido += premium
                     fluxo_por_strike[k] = fluxo_por_strike.get(k, 0.0) - premium
                 else:
                     total_comprado += premium
                     fluxo_por_strike[k] = fluxo_por_strike.get(k, 0.0) + premium
-            # Se cair no miolo entre terco_baixo e terco_alto, descarta (Item 23)
 
     return total_comprado, total_vendido, fluxo_por_strike
 
@@ -443,51 +437,43 @@ def detectar_setup(barras, spot, flip, dominio, cw, pw):
         return dict(codigo="S6", nome="Proteção no Hedge Negativo", vies="COMPRADOR (bounce)",
                     gatilho=f"preço testando a 1ª barra− ({pn:.0f}) com ímã positivo em {mp:.0f} acima",
                     alvo=f"{mp:.0f} (ímã) / retorno ao VWAP",
-                    invalidacao=f"perder {pn:.0f} com fluxo vendedor (defesa falhou)",
-                    obs="Setup mais assertivo: dealer defende agressivamente a zona negativa.")
+                    invalidacao=f"perder {pn:.0f} com fluxo vendedor (defesa falhou)")
 
     if un and perto(un) and spot <= (mn or un):
         return dict(codigo="S4", nome="Pullback no Fundo", vies="COMPRADOR (bounce/reversão)",
                     gatilho=f"preço na última barra− ({un:.0f}) — exaustão da venda",
                     alvo=f"{mp:.0f} (ímã acima)" if mp else "VWAP / ímã acima",
-                    invalidacao=f"aceitação abaixo de {un:.0f} (flush continua)",
-                    obs="Movimento costuma ser rápido no início e estancar perto do ímã.")
+                    invalidacao=f"aceitação abaixo de {un:.0f} (flush continua)")
 
     if up and perto(up) and mp and mp < spot:
         return dict(codigo="S3", nome="Pullback no Topo", vies="VENDEDOR (recuo ao ímã)",
                     gatilho=f"preço na última barra+ ({up:.0f}) com ímã em {mp:.0f} abaixo",
-                    alvo=f"{mp:.0f} (ímã abaixo)", invalidacao=f"romper e sustentar acima de {up:.0f}",
-                    obs="Reversão para o ímã inferior, salvo se instituições forçarem continuação.")
+                    alvo=f"{mp:.0f} (ímã abaixo)", invalidacao=f"romper e sustentar acima de {up:.0f}")
 
     if flip and spot > flip and mp and mp > spot:
         return dict(codigo="S1", nome="Rompimento Altista", vies="COMPRADOR (momentum)",
                     gatilho=f"preço cruzou o flip ({flip:.0f}) com ímã {mp:.0f} acima aberto",
-                    alvo=f"{mp:.0f} (maior+)", invalidacao=f"voltar para baixo do flip ({flip:.0f})",
-                    obs="Aceleração livre até o call wall ou ímã.")
+                    alvo=f"{mp:.0f} (maior+)", invalidacao=f"voltar para baixo do flip ({flip:.0f})")
 
     if pn and spot < pn:
         return dict(codigo="S2", nome="Rompimento Baixista", vies="VENDEDOR (short/flush)",
                     gatilho=f"preço perdeu a 1ª barra− ({pn:.0f}) e entrou em terreno aberto",
                     alvo=f"{mn:.0f} (maior− abaixo)" if mn else "Última barra−",
-                    invalidacao=f"recuperar e aceitar acima de {pn:.0f}",
-                    obs="Zona de aceleração dos dealers (short gamma). Movimentos violentos.")
+                    invalidacao=f"recuperar e aceitar acima de {pn:.0f}")
 
     if mp and mn and mn <= spot <= mp:
         return dict(codigo="S5", nome="Consolidação (Pinning)", vies="NEUTRO (disputa/range)",
                     gatilho=f"preço preso entre o ímã+ ({mp:.0f}) e o ímã− ({mn:.0f})",
-                    alvo=f"Extremos da consolidação ({mn:.0f} a {mp:.0f})", invalidacao="Romper um dos extremos",
-                    obs="Evitar entradas no meio do range. Operar apenas as extremidades.")
+                    alvo=f"Extremos ({mn:.0f} a {mp:.0f})", invalidacao="Romper um dos extremos")
     return None
 
 # ----------------------------------------------------------------------------
 # MONTAGEM E LOGICA DO RENDERIZADOR COMPLETO
 # ----------------------------------------------------------------------------
-# Gerenciamento de Autorefresh Dinâmico (Item 3)
 agora_ny = datetime.now()
 janela_quente = (agora_ny.time() >= dtime(9, 0)) and (agora_ny.time() <= dtime(9, 45))
 st_autorefresh(interval=30000 if janela_quente else 60000, key="pq_refresh")
 
-# Cabeçalho PrumoQuant
 st.markdown(f"""
 <div class="pq-header">
     <div>
@@ -501,7 +487,6 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# Processador Principal de Dados
 tickers_para_rodar = ["SPY", "QQQ"] if MODO_VISAO == "SPY + QQQ lado a lado" else [TICKER_UNICO]
 r_global = taxa_juros_automatica() if USAR_R_AUTO else TAXA_MANUAL
 if r_global is None: r_global = TAXA_MANUAL
@@ -509,8 +494,10 @@ if r_global is None: r_global = TAXA_MANUAL
 dados_ativos = {}
 for tk in tickers_para_rodar:
     hist, pc, calls, puts, venc = buscar_dados(tk)
-    if hist.empty or calls is None:
-        st.warning(f"Aguardando primeira resposta da API da Tradier para o ativo {tk}...")
+    
+    # Bloco defensivo para não travar o carregamento da UI
+    if hist.empty or calls is None or calls.empty:
+        st.info(f"📢 **Painel suspenso para {tk}:** Aguardando liberação de dados da API. Verifique mensagens de erro acima ou aguarde o próximo ciclo.")
         st.stop()
     
     spot = float(hist["Close"].iloc[-1])
@@ -528,15 +515,13 @@ for tk in tickers_para_rodar:
         "b_gex": b_gex, "comp": comp, "vend": vend, "strk_fluxo": strk_fluxo, "b_fluxo": b_fluxo, "venc": venc
     }
 
-# Banner do Veto SPY × QQQ (Item 11)
 if MODO_VISAO == "SPY + QQQ lado a lado":
     s_spy = detectar_setup(dados_ativos["SPY"]["b_gex"], dados_ativos["SPY"]["spot"], dados_ativos["SPY"]["flip"], dados_ativos["SPY"]["dominio"], dados_ativos["SPY"]["cw"], dados_ativos["SPY"]["pw"])
     s_qqq = detectar_setup(dados_ativos["QQQ"]["b_gex"], dados_ativos["QQQ"]["spot"], dados_ativos["QQQ"]["flip"], dados_ativos["QQQ"]["dominio"], dados_ativos["QQQ"]["cw"], dados_ativos["QQQ"]["pw"])
     
     if s_qqq and s_spy and s_qqq["codigo"] == "S2" and s_spy["codigo"] != "S2":
-        st.markdown('<div class="setup-linha" style="border-color:#ef4444; background:#2d1414;">⚠️ <b>VETO ATIVO:</b> QQQ armou Rompimento Baixista (S2) mas o SPY não confirmou. Operação proibida por desalinhamento.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="setup-linha" style="border-color:#ef4444; background:#2d1414;">⚠️ <b>VETO ATIVO:</b> QQQ armou Rompimento Baixista mas o SPY não confirmou. Operação proibida.</div>', unsafe_allow_html=True)
 
-# Renderização de Abas Estilo Quantico
 tab1, tab2, tab3 = st.tabs(["📊 Visão Geral", "⚡ Delta-Hedging (GEX)", "🌊 Fluxo de Agressão"])
 
 with tab1:
@@ -549,13 +534,11 @@ with tab1:
         with target_col:
             st.subheader(f"Painel Principal {tk}")
             
-            # Régua de fluxo estilo Volume Imbalance da Quantico (Item 19)
             tot_f = d["comp"] + d["vend"]
             p_comp = (d["comp"] / tot_f * 100) if tot_f > 0 else 50.0
             p_vend = (d["vend"] / tot_f * 100) if tot_f > 0 else 50.0
             net_f = d["comp"] - d["vend"]
             
-            # Item 24: Janela recente em linguagem simples
             status_recente = "INSTITUIÇÕES COMPRANDO AGORA" if p_comp > 60 else ("INSTITUIÇÕES VENDENDO AGORA" if p_vend > 60 else "EM DISPUTA NEUTRA")
             
             st.markdown(f"""
@@ -576,29 +559,26 @@ with tab1:
             </div>
             """, unsafe_allow_html=True)
             
-            # Setup em uma linha discreta (Item 19)
             s = detectar_setup(d["b_gex"], d["spot"], d["flip"], d["dominio"], d["cw"], d["pw"])
             if s:
                 st.markdown(f'<div class="setup-linha">⚙️ <b>Setup Ativo {tk}:</b> <span class="amarelo">{s["codigo"]} - {s["nome"]}</span> | Viés: <b>{s["vies"]}</b> | Alvo: {s["alvo"]}</div>', unsafe_allow_html=True)
             
-            # Cartões e tabelas recolhidos em Expander abaixo dos resumos gráficos (Item 19)
-            with st.expander("👁️ Ver Cartões Estratégicos, Bandas VWAP e Conversor Futuro"):
+            with st.expander("👁️ Ver Cartões Estratégicos e Conversor Futuro"):
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Preço Spot", f"${d['spot']:.2f}")
-                c2.metric("VWAP Regular", f"${d['vwap']:.2f}")
-                c3.metric("Call Wall Muro", f"${d['cw']:.1f}" if d['cw'] else "N/A")
-                c4.metric("Put Wall Muro", f"${d['pw']:.1f}" if d['pw'] else "N/A")
+                c2.metric("VWAP", f"${d['vwap']:.2f}")
+                c3.metric("Call Wall", f"${d['cw']:.1f}" if d['cw'] else "N/A")
+                c4.metric("Put Wall", f"${d['pw']:.1f}" if d['pw'] else "N/A")
                 
-                # Calculadora de Conversão ES/NQ para a Boleta (Item 10)
                 n_fut, p_fut, r_fut = razao_futuro(tk, d["spot"])
                 if r_fut:
                     st.markdown(f"""
-                    | Nível ETF ({tk}) | Preço Equivalente no Futuro ({n_fut}) | Função Operacional |
-                    | :--- | :--- | :--- |
-                    | **Spot:** ${d['spot']:.2f} | **${d['spot']*r_fut:.1f}** | Preço Atual de Tela |
-                    | **Call Wall:** ${d['cw']:.1f} | **${d['cw']*r_fut:.1f}** | Resistência Máxima / Alvo |
-                    | **Put Wall:** ${d['pw']:.1f} | **${d['pw']*r_fut:.1f}** | Suporte Extremo / Defesa |
-                    | **Flip:** ${d['flip']:.1f} | **${d['flip']*r_fut:.1f}** | Divisor de Águas do Regime |
+                    | Nível ETF ({tk}) | Preço Equivalente no Futuro ({n_fut}) |
+                    | :--- | :--- |
+                    | **Spot:** ${d['spot']:.2f} | **${d['spot']*r_fut:.1f}** |
+                    | **Call Wall:** ${d['cw']:.1f} | **${d['cw']*r_fut:.1f}** |
+                    | **Put Wall:** ${d['pw']:.1f} | **${d['pw']*r_fut:.1f}** |
+                    | **Flip:** ${d['flip']:.1f} | **${d['flip']*r_fut:.1f}** |
                     """, unsafe_allow_html=True)
 
 with tab2:
