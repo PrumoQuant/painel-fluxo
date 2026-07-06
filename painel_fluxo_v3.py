@@ -50,6 +50,14 @@
 #      layout todo empilhado (dual = SPY sobre QQQ).
 #  14. MENTOR DE DISCIPLINA: regras escritas pelo próprio operador; uma
 #      por dia em banner + expander com todas. Estratégia, não sorte.
+#  15. FASE 2.1 — REFORMULAÇÃO VISUAL: interface em ABAS (Visão Geral ·
+#      Delta-Hedging · Fluxo · Time Pressure · Setups · SPY×QQQ · TV);
+#      cabeçalho institucional PrumoQuant; disciplina em linha discreta c/
+#      popover; balanço comprador×vendedor logo abaixo do gamma (pedido do
+#      operador); Preço×VWAP opcional com BANDAS calibráveis por ativo
+#      (estilo Quantico, % do VWAP); aba com gráfico TradingView embutido;
+#      conversão ES/NQ robusta a fim de semana (cascata 1m→1h→diário) com
+#      aviso quando indisponível.
 #
 # HONESTIDADE TÉCNICA (não remover):
 #   - Dados yfinance: gratuitos e ATRASADOS (~15 min em opções); open
@@ -83,14 +91,36 @@ st.set_page_config(page_title="PrumoQuant — Fluxo de Opções (estudo)",
 st.markdown("""
 <style>
     .stApp { background-color: #0b0f14; }
-    section[data-testid="stSidebar"] { background-color: #10161d; }
+    section[data-testid="stSidebar"] { background-color: #0e141b; }
     h1, h2, h3, p, span, label { color: #e6edf3; }
+    .block-container { padding-top: 1.1rem; max-width: 1500px; }
 
+    /* ---------- Cabeçalho institucional ---------- */
+    .pq-header { display: flex; justify-content: space-between;
+        align-items: flex-end; padding: 2px 0 10px 0; margin-bottom: 6px;
+        border-bottom: 1px solid #1c2733; }
+    .pq-logo { font-size: 1.55rem; font-weight: 800; letter-spacing: 1px;
+        color: #e6edf3; }
+    .pq-logo .fio { color: #fbbf24; }
+    .pq-sub { display: block; font-size: 0.72rem; color: #8b98a5;
+        letter-spacing: 2px; text-transform: uppercase; margin-top: 2px; }
+    .pq-meta { text-align: right; font-size: 0.72rem; color: #8b98a5;
+        line-height: 1.5; }
+
+    /* ---------- Abas ---------- */
+    .stTabs [data-baseweb="tab-list"] { gap: 4px; border-bottom: 1px solid #1c2733; }
+    .stTabs [data-baseweb="tab"] { background: transparent; color: #8b98a5;
+        font-size: 0.85rem; padding: 8px 14px; border-radius: 8px 8px 0 0; }
+    .stTabs [aria-selected="true"] { color: #e6edf3; background: #131a22;
+        border-bottom: 2px solid #fbbf24; }
+
+    /* ---------- Cartões ---------- */
     .cartao {
-        background: #131a22; border: 1px solid #1f2937; border-radius: 10px;
+        background: linear-gradient(180deg, #131a22 0%, #10161d 100%);
+        border: 1px solid #1e2936; border-radius: 10px;
         padding: 12px 14px 9px 14px; height: 100%;
     }
-    .cartao .rotulo { font-size: 0.68rem; letter-spacing: 1px;
+    .cartao .rotulo { font-size: 0.66rem; letter-spacing: 1.5px;
         text-transform: uppercase; color: #8b98a5; margin-bottom: 2px; }
     .cartao .valor { font-size: 1.35rem; font-weight: 700; color: #e6edf3;
         font-variant-numeric: tabular-nums; }
@@ -104,6 +134,10 @@ st.markdown("""
     .selo-aberto  { background: #052e16; color: #22c55e; border: 1px solid #14532d; }
     .selo-fechado { background: #450a0a; color: #f87171; border: 1px solid #7f1d1d; }
     .selo-pre     { background: #422006; color: #fbbf24; border: 1px solid #92400e; }
+
+    /* ---------- Linha de disciplina (discreta) ---------- */
+    .disciplina { font-size: 0.78rem; color: #9aa7b4; padding: 2px 0 0 0; }
+    .disciplina b { color: #fbbf24; font-weight: 700; }
 
     .terminal {
         background: #05100a; border: 1px solid #14532d; border-radius: 10px;
@@ -137,6 +171,39 @@ MOSTRAR_FUTUROS = st.sidebar.checkbox(
     "Converter níveis para futuros (ES/NQ)", value=True,
     help="Mostra os muros e alvos já convertidos para o preço do futuro "
          "correspondente, para operar na corretora.")
+with st.sidebar.expander("Preferências de exibição"):
+    MOSTRAR_VWAP = st.checkbox(
+        "Gráfico Preço × VWAP (com bandas)", value=True,
+        help="Preço intradiário com VWAP e bandas de desvio (calibragem "
+             "estilo Quantico). Aparece na Visão Geral.")
+    BANDAS_QQQ_TXT = st.text_input(
+        "Bandas VWAP QQQ (%)", "0.235, 0.47, 0.705",
+        help="Multiplicadores de banda em % do VWAP (modo porcentagem), "
+             "separados por vírgula — calibragem da aula.")
+    BANDAS_SPY_TXT = st.text_input(
+        "Bandas VWAP SPY (%)", "0.235, 0.47, 0.705",
+        help="SPY tem calibragem própria — ajuste aqui quando tiver os "
+             "valores da aula.")
+    MOSTRAR_TV = st.checkbox(
+        "Aba com gráfico TradingView embutido", value=True,
+        help="Candles ao vivo do TradingView com VWAP, dentro do painel.")
+
+
+def parse_bandas(txt):
+    """'0.235, 0.47' → [0.235, 0.47]; ignora lixo; limita a 3 bandas."""
+    out = []
+    for p in str(txt).replace(";", ",").split(","):
+        try:
+            v = float(p.strip().replace("%", ""))
+            if 0 < v < 5:
+                out.append(v)
+        except Exception:
+            pass
+    return out[:3]
+
+
+BANDAS_VWAP = {"QQQ": parse_bandas(BANDAS_QQQ_TXT),
+               "SPY": parse_bandas(BANDAS_SPY_TXT)}
 st.sidebar.caption("Ferramenta de ESTUDO. Dados gratuitos/atrasados "
                    "(yfinance). Não é recomendação de investimento.")
 
@@ -218,11 +285,18 @@ def razao_futuro(ticker, spot_etf):
         return None, None, None
     simbolo, nome, _ = mapa[ticker]
     try:
-        fut = yf.Ticker(simbolo).history(period="1d", interval="1m",
-                                         prepost=True)
-        if fut.empty:
+        tkf = yf.Ticker(simbolo)
+        preco_fut = None
+        # Cascata: minuto (pregão) → hora → diário (fim de semana/feriado).
+        # Futuros fecham na sexta e reabrem domingo à noite; sem a cascata
+        # a tabela sumia no fim de semana (busca de 1 min voltava vazia).
+        for per, itv in (("1d", "1m"), ("5d", "1h"), ("10d", "1d")):
+            fut = tkf.history(period=per, interval=itv, prepost=True)
+            if not fut.empty:
+                preco_fut = float(fut["Close"].iloc[-1])
+                break
+        if not preco_fut:
             return None, None, None
-        preco_fut = float(fut["Close"].iloc[-1])
         razao = preco_fut / spot_etf
         return nome, preco_fut, razao
     except Exception:
@@ -939,6 +1013,10 @@ def tabela_conversao(d):
     """
     razao = d.get("fut_razao")
     if not razao or not d.get("fut_nome"):
+        if MOSTRAR_FUTUROS and d["ticker"] in ("SPY", "QQQ"):
+            st.caption("Conversão ES/NQ indisponível neste ciclo (futuro "
+                       "sem cotação no Yahoo — comum em fim de semana ou "
+                       "limite temporário). Reaparece sozinha.")
         return
     spot = d["spot"]
     nome = d["fut_nome"]
@@ -1243,18 +1321,22 @@ MENSAGENS_DISCIPLINA = [
 
 
 def mentor_disciplina():
-    """Banner com a regra de disciplina do dia + expander com todas."""
+    """Linha discreta com a regra do dia; botão pequeno abre todas."""
     idx = pd.Timestamp.now().dayofyear % len(MENSAGENS_DISCIPLINA)
     msg = MENSAGENS_DISCIPLINA[idx]
-    st.markdown(
-        f"<div style='background:#1a1406;border-left:3px solid #fbbf24;"
-        f"border-radius:6px;padding:8px 14px;margin:2px 0 8px 0;"
-        f"color:#e6edf3;font-size:0.85rem;'>"
-        f"<span style='color:#fbbf24;font-weight:700;'>🧭 DISCIPLINA · </span>"
-        f"{msg}</div>", unsafe_allow_html=True)
-    with st.expander("Ver todas as regras de disciplina"):
-        for m in MENSAGENS_DISCIPLINA:
-            st.markdown(f"- {m}")
+    c1, c2 = st.columns([30, 1])
+    c1.markdown(f"<div class='disciplina'>🧭 <b>Disciplina</b> · {msg}</div>",
+                unsafe_allow_html=True)
+    with c2:
+        if hasattr(st, "popover"):
+            with st.popover("☰"):
+                st.markdown("**As 15 regras do operador**")
+                for m in MENSAGENS_DISCIPLINA:
+                    st.markdown(f"- {m}")
+        else:
+            with st.expander("☰"):
+                for m in MENSAGENS_DISCIPLINA:
+                    st.markdown(f"- {m}")
 
 
 # ---- Taxa de juros (Fase 1.7): automática via ^IRX, manual de reserva ----
@@ -1262,13 +1344,16 @@ R_AUTO = taxa_juros_automatica() if USAR_R_AUTO else None
 TAXA_JUROS = R_AUTO if R_AUTO else TAXA_MANUAL
 origem_r = "auto ^IRX" if R_AUTO else "manual"
 
-st.markdown(f"## PrumoQuant — Fluxo de Opções &nbsp; {selo}",
-            unsafe_allow_html=True)
-st.caption(f"NY {agora_ny:%H:%M} · Brasília {agora_br:%H:%M} · abertura "
-           f"9:30 NY · atualização a cada "
-           f"{'30 s (janela quente)' if janela_quente else '60 s'} · dados "
-           f"atrasados ~15 min (yfinance) · r {TAXA_JUROS*100:.2f}% "
-           f"({origem_r})")
+st.markdown(
+    f"<div class='pq-header'>"
+    f"<div><span class='pq-logo'>PRUMO<span class='fio'>QUANT</span></span>"
+    f"<span class='pq-sub'>terminal de fluxo de opções · SPY &amp; QQQ · "
+    f"estudo</span></div>"
+    f"<div class='pq-meta'>{selo}<br>"
+    f"NY {agora_ny:%H:%M} · BR {agora_br:%H:%M} · "
+    f"refresh {'30 s' if janela_quente else '60 s'} · "
+    f"r {TAXA_JUROS*100:.2f}% ({origem_r}) · yfinance ~15 min</div>"
+    f"</div>", unsafe_allow_html=True)
 mentor_disciplina()
 
 tickers = ["SPY", "QQQ"] if MODO_VISAO.startswith("SPY") else [TICKER_UNICO]
@@ -1289,170 +1374,226 @@ if "SPY" in dados and "QQQ" in dados:
 janela_abertura = (ESTADO == "pre" or
                    (ESTADO == "aberto" and t_ny < dtime(9, 45)))
 
-# ---------------- MODO UM ATIVO ----------------
-if len(dados) == 1:
-    d = list(dados.values())[0]
-    t = d["ticker"]
-    cartoes_do_ativo(d)
-    faixa_setup(d)
-    tabela_conversao(d)
-    st.markdown("")
+# ============================================================================
+# FASE 2.1 — INTERFACE EM ABAS (reformulação visual)
+# Cada bloco é uma função; as abas aplicam o bloco a cada ativo carregado
+# (duas colunas no desktop em modo dual; empilhado no celular/um ativo).
+# ============================================================================
 
-    if janela_abertura:
-        sc, gap = score_abertura(d["spot"], d["prev_close"], d["flip"],
-                                 d["cw"], d["pw"], d["dominio"], d["hist"])
-        st.markdown(playbook_abertura(t, d["spot"], d["prev_close"], d["cw"],
-                                      d["pw"], d["flip"], d["dominio"], sc,
-                                      gap, agora_ny), unsafe_allow_html=True)
+import streamlit.components.v1 as components
 
+
+def para_cada_ativo(render):
+    """Aplica um bloco de renderização a cada ativo carregado."""
+    lista = [dados[t] for t in ("SPY", "QQQ") if t in dados]
+    if len(lista) == 1:
+        render(lista[0])
+        return
     if MODO_CELULAR:
-        # ---- Layout celular: tudo empilhado, gamma na horizontal ----
-        st.plotly_chart(grafico_gex(d, 560, horizontal=True),
-                        use_container_width=True)
-        if ESTADO != "aberto":
-            st.info("Fluxo pausado (fora do pregão). Opções não negociam "
-                    "no pré-mercado.")
-        f4 = go.Figure()
-        f4.add_scatter(x=d["hist"].index, y=d["hist"]["Close"], name="Preço",
-                       line=dict(color="#eab308", width=1.6))
-        f4.add_scatter(x=d["idx_vwap"], y=d["vwap"], name="VWAP",
-                       line=dict(color="#a78bfa", width=1.6))
-        f4.update_layout(title="Intradiário (com pré/pós): preço x VWAP")
-        st.plotly_chart(tema(f4, 260), use_container_width=True)
-        st.caption("Modo celular: gráficos completos de fluxo disponíveis "
-                   "no desktop.")
-        ce = cd = None
-    else:
-        ce, cd = st.columns([3, 2])
-    if ce is not None:
-      with ce:
-        st.plotly_chart(grafico_gex(d, 380), use_container_width=True)
-        if len(d["serie"]) >= 2 and (d["bull_acum"] + d["bear_acum"]) > 0:
-            df_f = pd.DataFrame(d["serie"])
-            f2 = go.Figure()
-            f2.add_scatter(x=df_f["hora"], y=df_f["bull_acum"],
-                           fill="tozeroy", name="Comprador (acum.)",
-                           line_color="#22c55e")
-            f2.add_scatter(x=df_f["hora"], y=df_f["bear_acum"],
-                           fill="tozeroy", name="Vendedor (acum.)",
-                           line_color="#ef4444")
-            f2.update_layout(title="Net Premium estimado — sessão")
-            f2.update_yaxes(tickprefix="$", tickformat="~s")
-            st.plotly_chart(tema(f2, 300), use_container_width=True)
-        elif ESTADO == "aberto":
+        for d_ in lista:
+            st.markdown(f"### {d_['ticker']}")
+            render(d_)
+        return
+    cols = st.columns(len(lista))
+    for col, d_ in zip(cols, lista):
+        with col:
+            st.markdown(f"### {d_['ticker']}")
+            render(d_)
+
+
+def grafico_balanco(d, altura=280, key=""):
+    """Donut comprador × vendedor — quem está ganhando a sessão."""
+    total = d["bull_acum"] + d["bear_acum"]
+    if total <= 0:
+        if ESTADO == "aberto":
             st.info("Fluxo em construção — ~2 ciclos após a abertura.")
         else:
-            st.info("Fluxo pausado (fora do pregão). Opções não negociam "
-                    "no pré-mercado.")
-    if cd is not None:
-      with cd:
-        total = d["bull_acum"] + d["bear_acum"]
-        if total > 0:
-            rot = "Comprador" if d["net_acum"] >= 0 else "Vendedor"
-            cor = "#22c55e" if d["net_acum"] >= 0 else "#ef4444"
-            f3 = go.Figure(go.Pie(labels=["Comprador", "Vendedor"],
-                                  values=[d["bull_acum"], d["bear_acum"]],
-                                  hole=0.68,
-                                  marker_colors=["#22c55e", "#ef4444"],
-                                  textinfo="percent"))
-            f3.update_layout(title="Balanço do fluxo",
-                             annotations=[dict(
-                                 text=f"<b>{fmt_usd(d['net_acum'])}</b><br>"
-                                      f"{rot}",
-                                 showarrow=False,
-                                 font=dict(size=16, color=cor))],
-                             showlegend=False)
-            st.plotly_chart(tema(f3, 290), use_container_width=True)
-        if d["strikes"]:
-            df_s = pd.DataFrame([{"strike": k, "net": v}
-                                 for k, v in d["strikes"].items()])
-            top = (df_s.reindex(df_s["net"].abs()
-                                .sort_values(ascending=False).index)
-                   .head(12).sort_values("strike"))
-            f5 = go.Figure(go.Bar(y=[f"{s:.0f}" for s in top["strike"]],
-                                  x=top["net"], orientation="h",
-                                  marker_color=["#22c55e" if v >= 0 else
-                                                "#ef4444"
-                                                for v in top["net"]]))
-            f5.update_layout(title="Fluxo por strike — sessão")
-            f5.update_xaxes(tickprefix="$", tickformat="~s")
-            st.plotly_chart(tema(f5, 300), use_container_width=True)
-        f4 = go.Figure()
-        f4.add_scatter(x=d["hist"].index, y=d["hist"]["Close"], name="Preço",
-                       line=dict(color="#eab308", width=1.6))
-        f4.add_scatter(x=d["idx_vwap"], y=d["vwap"], name="VWAP",
-                       line=dict(color="#a78bfa", width=1.6))
-        f4.update_layout(title="Intradiário (com pré/pós): preço x VWAP")
-        st.plotly_chart(tema(f4, 270), use_container_width=True)
+            st.info("Balanço comprador × vendedor volta com o mercado "
+                    "aberto (opções não negociam no pré-mercado).")
+        return
+    rot = "Comprador" if d["net_acum"] >= 0 else "Vendedor"
+    cor = "#22c55e" if d["net_acum"] >= 0 else "#ef4444"
+    f3 = go.Figure(go.Pie(labels=["Comprador", "Vendedor"],
+                          values=[d["bull_acum"], d["bear_acum"]],
+                          hole=0.68,
+                          marker_colors=["#22c55e", "#ef4444"],
+                          textinfo="percent"))
+    f3.update_layout(title="Quem está ganhando — balanço do fluxo",
+                     annotations=[dict(
+                         text=f"<b>{fmt_usd(d['net_acum'])}</b><br>{rot}",
+                         showarrow=False,
+                         font=dict(size=16, color=cor))],
+                     showlegend=False)
+    st.plotly_chart(tema(f3, altura), use_container_width=True,
+                    key=f"bal_{key}_{d['ticker']}")
 
+
+def grafico_preco_vwap(d, altura=290, key=""):
+    """Preço × VWAP com bandas de desvio (calibragem estilo Quantico)."""
+    f = go.Figure()
+    # Bandas em % do VWAP (modo porcentagem, como na aula) — ao fundo:
+    for k_ in BANDAS_VWAP.get(d["ticker"], []):
+        f.add_scatter(x=d["idx_vwap"], y=d["vwap"] * (1 + k_ / 100.0),
+                      line=dict(color="#2dd4bf", width=0.8, dash="dot"),
+                      showlegend=False, hoverinfo="skip")
+        f.add_scatter(x=d["idx_vwap"], y=d["vwap"] * (1 - k_ / 100.0),
+                      line=dict(color="#2dd4bf", width=0.8, dash="dot"),
+                      showlegend=False, hoverinfo="skip")
+    f.add_scatter(x=d["hist"].index, y=d["hist"]["Close"], name="Preço",
+                  line=dict(color="#eab308", width=1.6))
+    f.add_scatter(x=d["idx_vwap"], y=d["vwap"], name="VWAP",
+                  line=dict(color="#a78bfa", width=1.7))
+    f.update_layout(title="Preço × VWAP + bandas")
+    st.plotly_chart(tema(f, altura), use_container_width=True,
+                    key=f"vw_{key}_{d['ticker']}")
+
+
+# ------------------------- blocos das abas -------------------------
+
+def bloco_visao_geral(d):
+    cartoes_do_ativo(d, mobile=MODO_CELULAR)
+    faixa_setup(d)
+    tabela_conversao(d)
+    if janela_abertura:
+        sc, gp = score_abertura(d["spot"], d["prev_close"], d["flip"],
+                                d["cw"], d["pw"], d["dominio"], d["hist"])
+        st.markdown(playbook_abertura(d["ticker"], d["spot"],
+                                      d["prev_close"], d["cw"], d["pw"],
+                                      d["flip"], d["dominio"], sc, gp,
+                                      agora_ny), unsafe_allow_html=True)
+    st.plotly_chart(grafico_gex(d, 520 if MODO_CELULAR else 360,
+                                horizontal=MODO_CELULAR),
+                    use_container_width=True, key=f"vg_gex_{d['ticker']}")
+    # Pedido do operador: o balanço comprador × vendedor logo abaixo
+    # do gamma — "quem está ganhando" é leitura de primeira necessidade.
+    grafico_balanco(d, key="vg")
+    if MOSTRAR_VWAP:
+        grafico_preco_vwap(d, key="vg")
+
+
+def bloco_gamma(d):
+    st.plotly_chart(grafico_gex(d, 560 if MODO_CELULAR else 470,
+                                horizontal=MODO_CELULAR),
+                    use_container_width=True, key=f"dh_gex_{d['ticker']}")
+    if d.get("barras"):
+        st.caption("Barras-chave: 1+ primeira positiva (linha de defesa) · "
+                   "MÁX+ maior positiva (ímã do dia) · ú+ última positiva "
+                   "(exaustão da alta) · 1− primeira negativa (mais "
+                   "defendida pelo dealer) · MÁX− maior negativa (alvo da "
+                   "aceleração) · ú− última negativa (exaustão da queda).")
+
+
+def bloco_fluxo(d):
+    if len(d["serie"]) >= 2 and (d["bull_acum"] + d["bear_acum"]) > 0:
+        df_f = pd.DataFrame(d["serie"])
+        f2 = go.Figure()
+        f2.add_scatter(x=df_f["hora"], y=df_f["bull_acum"], fill="tozeroy",
+                       name="Comprador (acum.)", line_color="#22c55e")
+        f2.add_scatter(x=df_f["hora"], y=df_f["bear_acum"], fill="tozeroy",
+                       name="Vendedor (acum.)", line_color="#ef4444")
+        f2.update_layout(title="Net Premium estimado — sessão")
+        f2.update_yaxes(tickprefix="$", tickformat="~s")
+        st.plotly_chart(tema(f2, 300), use_container_width=True,
+                        key=f"fx_np_{d['ticker']}")
+    grafico_balanco(d, key="fx")
+    if d["strikes"]:
+        df_s = pd.DataFrame([{"strike": k, "net": v}
+                             for k, v in d["strikes"].items()])
+        top = (df_s.reindex(df_s["net"].abs()
+                            .sort_values(ascending=False).index)
+               .head(12).sort_values("strike"))
+        f5 = go.Figure(go.Bar(y=[f"{s:.0f}" for s in top["strike"]],
+                              x=top["net"], orientation="h",
+                              marker_color=["#22c55e" if v >= 0 else
+                                            "#ef4444"
+                                            for v in top["net"]]))
+        f5.update_layout(title="Fluxo por strike — sessão")
+        f5.update_xaxes(tickprefix="$", tickformat="~s")
+        st.plotly_chart(tema(f5, 300), use_container_width=True,
+                        key=f"fx_st_{d['ticker']}")
+
+
+def bloco_setups(d):
+    faixa_setup(d)
     st.markdown(gerar_playbook(
-        t, dict(d, estado=ESTADO,
-                data_sessao=d["ultimo"].strftime("%d/%m/%Y")), agora_br),
-        unsafe_allow_html=True)
+        d["ticker"], dict(d, estado=ESTADO,
+                          data_sessao=d["ultimo"].strftime("%d/%m/%Y")),
+        agora_br), unsafe_allow_html=True)
 
-# ---------------- MODO SPY + QQQ LADO A LADO ----------------
-else:
-    if MODO_CELULAR:
-        # ---- Celular: um ativo abaixo do outro, gamma horizontal ----
-        for tk_ in ("SPY", "QQQ"):
-            d = dados.get(tk_)
-            if not d:
-                st.warning(f"Sem dados de {tk_} neste ciclo.")
-                continue
-            st.markdown(f"### {tk_}")
-            cartoes_do_ativo(d, mobile=True)
-            faixa_setup(d)
-            tabela_conversao(d)
-            if janela_abertura:
-                sc, gap = score_abertura(d["spot"], d["prev_close"],
-                                         d["flip"], d["cw"], d["pw"],
-                                         d["dominio"], d["hist"])
-                st.markdown(playbook_abertura(tk_, d["spot"],
-                                              d["prev_close"], d["cw"],
-                                              d["pw"], d["flip"],
-                                              d["dominio"], sc, gap,
-                                              agora_ny),
-                            unsafe_allow_html=True)
-            st.plotly_chart(grafico_gex(d, 520, horizontal=True),
-                            use_container_width=True)
-    else:
-      col_spy, col_qqq = st.columns(2)
-      for col, tk_ in ((col_spy, "SPY"), (col_qqq, "QQQ")):
-        d = dados.get(tk_)
-        if not d:
-            col.warning(f"Sem dados de {tk_} neste ciclo.")
-            continue
-        with col:
-            st.markdown(f"### {tk_}")
-            cartoes_do_ativo(d)
-            faixa_setup(d)
-            tabela_conversao(d)
-            if janela_abertura:
-                sc, gap = score_abertura(d["spot"], d["prev_close"],
-                                         d["flip"], d["cw"], d["pw"],
-                                         d["dominio"], d["hist"])
-                st.markdown(playbook_abertura(tk_, d["spot"],
-                                              d["prev_close"], d["cw"],
-                                              d["pw"], d["flip"],
-                                              d["dominio"], sc, gap,
-                                              agora_ny),
-                            unsafe_allow_html=True)
-            st.plotly_chart(grafico_gex(d, 320), use_container_width=True)
-            f4 = go.Figure()
-            f4.add_scatter(x=d["hist"].index, y=d["hist"]["Close"],
-                           name="Preço",
-                           line=dict(color="#eab308", width=1.5))
-            f4.add_scatter(x=d["idx_vwap"], y=d["vwap"], name="VWAP",
-                           line=dict(color="#a78bfa", width=1.5))
-            f4.update_layout(title="Preço x VWAP")
-            st.plotly_chart(tema(f4, 240), use_container_width=True)
 
+def bloco_tv(d):
+    """Gráfico TradingView embutido (candles vivos + VWAP)."""
+    simbolo = {"SPY": "AMEX:SPY", "QQQ": "NASDAQ:QQQ"}.get(d["ticker"])
+    if not simbolo:
+        return
+    html_tv = f"""
+    <div class="tradingview-widget-container">
+      <div id="tv_{d['ticker']}"></div>
+      <script src="https://s3.tradingview.com/tv.js"></script>
+      <script>
+      new TradingView.widget({{
+        "container_id": "tv_{d['ticker']}",
+        "symbol": "{simbolo}",
+        "interval": "1",
+        "timezone": "America/New_York",
+        "theme": "dark",
+        "style": "1",
+        "locale": "br",
+        "hide_side_toolbar": true,
+        "allow_symbol_change": false,
+        "studies": ["STD;VWAP"],
+        "width": "100%",
+        "height": 480
+      }});
+      </script>
+    </div>"""
+    components.html(html_tv, height=500)
+
+
+# ------------------------- montagem das abas -------------------------
+nomes_abas = ["📊 Visão Geral", "🧲 Delta-Hedging", "💰 Fluxo",
+              "⏱ Time Pressure", "🎯 Setups & Playbook", "⚖ SPY × QQQ"]
+if MOSTRAR_TV:
+    nomes_abas.append("📈 Gráfico TV")
+abas = st.tabs(nomes_abas)
+
+with abas[0]:
+    para_cada_ativo(bloco_visao_geral)
+
+with abas[1]:
+    para_cada_ativo(bloco_gamma)
+    st.caption("Regime: acima do flip = gamma+ (dealer amortece; muros "
+               "seguram; dia de reversão). Abaixo do flip = gamma− (dealer "
+               "acelera; rompimentos andam). Estudo, não recomendação.")
+
+with abas[2]:
+    para_cada_ativo(bloco_fluxo)
+
+with abas[3]:
+    st.markdown("#### Time Pressure — em construção (Fase 1.8)")
+    st.markdown(
+        "O terceiro indicador do método: a pressão do **decaimento "
+        "temporal** (theta/charm) forçando o hedge dos dealers ao longo "
+        "do dia. Barras positivas magnetizam o preço para cima; negativas "
+        "para baixo; **picos** = alívio de hedge → zona provável de "
+        "pullback. Entra após o Fluxo Institucional por strike (1.3).")
+
+with abas[4]:
+    para_cada_ativo(bloco_setups)
+
+with abas[5]:
     if "SPY" in dados and "QQQ" in dados:
         st.markdown(leitura_cruzada(dados["SPY"], dados["QQQ"]),
                     unsafe_allow_html=True)
-        for tk_ in ("SPY", "QQQ"):
-            d = dados[tk_]
-            st.markdown(gerar_playbook(
-                tk_, dict(d, estado=ESTADO,
-                          data_sessao=d["ultimo"].strftime("%d/%m/%Y")),
-                agora_br), unsafe_allow_html=True)
+    else:
+        st.info("Ative o modo 'SPY + QQQ lado a lado' na barra lateral "
+                "para a leitura cruzada (SPY = permissão, QQQ = gatilho).")
+
+if MOSTRAR_TV:
+    with abas[6]:
+        st.caption("Candles ao vivo do TradingView com VWAP embutido. A "
+                   "calibragem fina das bandas (0.235 / 0.47 / 0.705, modo "
+                   "porcentagem) o widget público não aceita — por isso as "
+                   "bandas calibradas estão no NOSSO gráfico Preço × VWAP "
+                   "(Visão Geral); aqui fica o candle vivo de apoio.")
+        para_cada_ativo(bloco_tv)
