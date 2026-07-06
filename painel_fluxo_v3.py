@@ -1489,8 +1489,18 @@ def processar(ticker, acumular_fluxo):
 
 
 def grafico_gex(d, altura=340, horizontal=False):
-    faixa = d["por_strike"][(d["por_strike"]["strike"] > d["spot"] * 0.965) &
-                            (d["por_strike"]["strike"] < d["spot"] * 1.035)]
+    # Guarda defensiva (v3.3.1): de madrugada/pré-mercado cedo o yfinance
+    # às vezes devolve a cadeia com IV/OI zerados → por_strike chega
+    # VAZIO e sem colunas; indexar "strike" estourava KeyError e
+    # derrubava o app inteiro. Sem curva, devolvemos None e o chamador
+    # mostra um aviso amigável (volta sozinho no próximo refresh).
+    ps_g = d.get("por_strike")
+    if ps_g is None or ps_g.empty or "strike" not in ps_g.columns:
+        return None
+    faixa = ps_g[(ps_g["strike"] > d["spot"] * 0.965) &
+                 (ps_g["strike"] < d["spot"] * 1.035)]
+    if faixa.empty:
+        return None
     cores = ["#22c55e" if g >= 0 else "#3b82f6" for g in faixa["gex"]]
 
     # ---------- MODO CELULAR (Fase 2.2): barras HORIZONTAIS ----------
@@ -1997,9 +2007,15 @@ def bloco_visao_geral(d):
                                       d["prev_close"], d["cw"], d["pw"],
                                       d["flip"], d["dominio"], sc, gp,
                                       agora_ny), unsafe_allow_html=True)
-    st.plotly_chart(grafico_gex(d, 500 if MODO_CELULAR else 330,
-                                horizontal=MODO_CELULAR),
-                    use_container_width=True, key=f"vg_gex_{d['ticker']}")
+    fig_gx = grafico_gex(d, 500 if MODO_CELULAR else 330,
+                         horizontal=MODO_CELULAR)
+    if fig_gx is not None:
+        st.plotly_chart(fig_gx, use_container_width=True,
+                        key=f"vg_gex_{d['ticker']}")
+    else:
+        st.info("Curva de gamma indisponível neste ciclo (IV/OI ainda "
+                "zerados no yfinance — comum de madrugada e no comecinho "
+                "do pré-mercado). Volta sozinha no próximo refresh.")
     fig_fx = grafico_fluxo_strike(d, 460 if MODO_CELULAR else 280,
                                   horizontal=MODO_CELULAR)
     if fig_fx is not None:
@@ -2015,9 +2031,15 @@ def bloco_visao_geral(d):
 
 
 def bloco_gamma(d):
-    st.plotly_chart(grafico_gex(d, 560 if MODO_CELULAR else 470,
-                                horizontal=MODO_CELULAR),
-                    use_container_width=True, key=f"dh_gex_{d['ticker']}")
+    fig_gx = grafico_gex(d, 560 if MODO_CELULAR else 470,
+                         horizontal=MODO_CELULAR)
+    if fig_gx is not None:
+        st.plotly_chart(fig_gx, use_container_width=True,
+                        key=f"dh_gex_{d['ticker']}")
+    else:
+        st.info("Curva de gamma indisponível neste ciclo (IV/OI ainda "
+                "zerados no yfinance — comum de madrugada e no comecinho "
+                "do pré-mercado). Volta sozinha no próximo refresh.")
     if d.get("barras"):
         st.caption("Barras-chave: 1+ primeira positiva (linha de defesa) · "
                    "MÁX+ maior positiva (ímã do dia) · ú+ última positiva "
