@@ -454,8 +454,17 @@ def calcular_gex(calls, puts, spot, venc_str, r):
     if por_strike.empty:
         return por_strike, None, None, None, None, False, {}
 
-    call_wall = por_strike.loc[por_strike["gex"].idxmax(), "strike"]
-    put_wall = por_strike.loc[por_strike["gex"].idxmin(), "strike"]
+    # v3.3.2 — MURO SÓ EXISTE COM O SINAL CERTO. No 0DTE cedo o lado das
+    # puts pode vir vazio → a banda fica toda positiva e o "idxmin" pegava
+    # a MENOR BARRA POSITIVA como put wall (ex.: put wall 753 ACIMA do
+    # call wall 748 — absurdo que contaminava leitura cruzada e playbook).
+    # Regra: call wall exige GEX máximo > 0; put wall exige GEX mínimo < 0.
+    gmax = float(por_strike["gex"].max())
+    gmin = float(por_strike["gex"].min())
+    call_wall = (por_strike.loc[por_strike["gex"].idxmax(), "strike"]
+                 if gmax > 0 else None)
+    put_wall = (por_strike.loc[por_strike["gex"].idxmin(), "strike"]
+                if gmin < 0 else None)
 
     ordenado = por_strike.sort_values("strike").reset_index(drop=True)
     acum = ordenado["gex"].cumsum().values
@@ -1111,10 +1120,17 @@ def gerar_playbook(t, d, agora_local):
                      + "  (instituições bloqueiam)")
 
     cw, pw = d["cw"], d["pw"]
-    if cw and pw:
-        L.append(f"MUROS .......: call wall {cw:.0f} "
-                 f"({(cw-spot)/spot*100:+.2f}%) | put wall {pw:.0f} "
-                 f"({(pw-spot)/spot*100:+.2f}%)")
+    if cw or pw:
+        # v3.3.2: muros podem existir só de um lado (banda toda positiva
+        # ou toda negativa — comum no 0DTE cedo). Mostra o que houver.
+        partes_muro = []
+        if cw:
+            partes_muro.append(f"call wall {cw:.0f} "
+                               f"({(cw-spot)/spot*100:+.2f}%)")
+        if pw:
+            partes_muro.append(f"put wall {pw:.0f} "
+                               f"({(pw-spot)/spot*100:+.2f}%)")
+        L.append("MUROS .......: " + " | ".join(partes_muro))
 
         # ----- Mapa das barras-chave (Fase 1.1) -----
         barras = d.get("barras") or {}
@@ -1169,21 +1185,29 @@ def gerar_playbook(t, d, agora_local):
             L.append("")
         L.append("<span class='titulo'>CENÁRIOS (estudo, não recomendação)"
                  "</span>")
-        if abs(spot - cw) / spot < 0.0015:
-            L.append(f"[1] Preço COLADO no call wall ({cw:.2f}): zona de "
-                     f"realização — NÃO PERSEGUIR compra aqui.")
+        if cw and pw:
+            if abs(spot - cw) / spot < 0.0015:
+                L.append(f"[1] Preço COLADO no call wall ({cw:.2f}): zona "
+                         f"de realização — NÃO PERSEGUIR compra aqui.")
+            else:
+                L.append(f"[1] SE sustentar acima do VWAP e do put wall "
+                         f"({pw:.2f}) com fluxo comprador → call wall "
+                         f"({cw:.2f}) como ímã. Invalidação: perda do VWAP "
+                         f"c/ fluxo vendedor.")
+            if abs(spot - pw) / spot < 0.0015:
+                L.append(f"[2] Preço COLADO no put wall ({pw:.2f}): freio "
+                         f"por hedge — NÃO PERSEGUIR venda aqui.")
+            else:
+                L.append(f"[2] SE perder o VWAP com fluxo vendedor → put "
+                         f"wall ({pw:.2f}) vira alvo/suporte. Invalidação: "
+                         f"retomada do VWAP.")
         else:
-            L.append(f"[1] SE sustentar acima do VWAP e do put wall "
-                     f"({pw:.2f}) com fluxo comprador → call wall ({cw:.2f}) "
-                     f"como ímã. Invalidação: perda do VWAP c/ fluxo "
-                     f"vendedor.")
-        if abs(spot - pw) / spot < 0.0015:
-            L.append(f"[2] Preço COLADO no put wall ({pw:.2f}): freio por "
-                     f"hedge — NÃO PERSEGUIR venda aqui.")
-        else:
-            L.append(f"[2] SE perder o VWAP com fluxo vendedor → put wall "
-                     f"({pw:.2f}) vira alvo/suporte. Invalidação: retomada "
-                     f"do VWAP.")
+            lado_ok = "call wall" if cw else "put wall"
+            L.append(f"[!] Banda de gamma toda de um lado neste ciclo — só "
+                     f"há {lado_ok} definido. Sem o par de muros, os "
+                     f"cenários completos ficam suspensos (comum no 0DTE "
+                     f"cedo; normaliza conforme o pregão popula o outro "
+                     f"lado).")
     L.append("")
     L.append("<span class='aviso'>Premissas: dealers vendidos (convenção), "
              "dados gratuitos/atrasados, fluxo estimado. Ferramenta de "
