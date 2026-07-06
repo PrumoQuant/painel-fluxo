@@ -1,8 +1,66 @@
 # ============================================================================
-# PAINEL DE FLUXO DE OPÇÕES — VERSÃO 3.1 "MODO ABERTURA" (ESTUDO PESSOAL)
+# PAINEL DE FLUXO DE OPÇÕES — VERSÃO 3.4 "CALIBRAÇÃO DO FLUXO" (ESTUDO)
 # PrumoQuant · https://prumoquant.streamlit.app
 # ============================================================================
-# Novidades da v3.1 em relação à v3:
+# Novidades da v3.4 (calibração pós-pregão de 06/07/2026 — o dia em que o
+# nosso fluxo estimado divergiu do Volume Imbalance real da Quantico:
+# nosso SPY "55% vendedor" × deles "92% bullish" num rali de +1%):
+#  23. CLASSIFICAÇÃO POR TERÇOS DO SPREAD: antes, negócio abaixo do MEIO
+#      do spread contava como "vendido". No 0DTE o decaimento (theta)
+#      derruba os prêmios o dia inteiro e os prints ficam abaixo do meio
+#      mesmo com agressão COMPRADORA → viés vendedor sistemático. Agora:
+#      terço de cima do spread = comprado; terço de baixo = vendido; o
+#      MIOLO é ambíguo e é DESCARTADO. Perder volume é melhor do que
+#      classificar errado. (Solução definitiva = tick real na Fase 3.)
+#  24. JANELA RECENTE (~30 min) NA RÉGUA DE FLUXO, em LINGUAGEM SIMPLES:
+#      "instituições COMPRANDO agora / VENDENDO agora / em DISPUTA" —
+#      o acumulado do dia esconde a virada da tarde.
+#  25. LINHA "SINAL SIMPLES" NO PLAYBOOK (estilo Striking Bell):
+#      ação → alvo → desmonte, sem jargão.
+#
+# Novidades da v3.3 em relação à v3.2 (pedidos do operador, 05/07/2026):
+#  19. VISÃO GERAL RECONSTRUÍDA (estilo Quantico, sem poluição):
+#      - setup vira UMA LINHA discreta (o banner completo mora só em
+#        Setups & Playbook);
+#      - RÉGUA DE FLUXO no topo (estilo "Volume Imbalance" da Quantico):
+#        % comprador × % vendedor, valores em $, NET e top strike;
+#      - gamma compacto + fluxo por strike compacto na sequência —
+#        a visão geral vira um resumo REAL de todos os indicadores;
+#      - cartões (Spot/VWAP/muros/flip/NET) e conversão ES/NQ movidos
+#        para um EXPANDER recolhido ABAIXO do gráfico (botão ver/ocultar);
+#      - Preço × VWAP + bandas também em expander recolhido.
+#  20. BOTÃO "?" EM CADA ABA: popover didático explicando o indicador
+#      (o que é, como ler, o que confirma).
+#  21. PRÉVIA DO DIRECIONAL DO DEALER (DDF) na aba Fluxo: % comprador ×
+#      % vendedor ao longo da sessão com a zona neutra 40–60 marcada
+#      (mesmo visual do DDF da Quantico). É PRÉVIA construída só com o
+#      Fluxo (1.3); a versão completa (item 1.10) combina GEX + Fluxo +
+#      Time Pressure e nasce depois do 1.8.
+#  22. Nota honesta sobre o atraso do widget TradingView embutido (e o
+#      caminho para tempo real de verdade: Fase 3 / Tradier).
+#
+# Novidades da v3.2 em relação à v3.1:
+#  16. FASE 1.3 — FLUXO INSTITUCIONAL POR STRIKE: o 2º indicador do
+#      método vira gráfico próprio na aba Fluxo (barras verdes = calls
+#      compradas/puts vendidas; vermelhas = puts compradas/calls
+#      vendidas), na MESMA janela de strikes do gamma para leitura lado
+#      a lado. Inclui as 6 barras-chave do FLUXO (primeira/maior/última,
+#      + e −), persistência diária do mapa por strike em CSV e — o mais
+#      importante — CONFIRMAÇÃO AUTOMÁTICA dos setups pelo fluxo
+#      (regras da lição "Confirmações do Fluxo Institucional"): cada
+#      setup ganha ✔ (instituições empurram junto) ou ⚠ (fluxo contra =
+#      armadilha) no banner, no playbook e na aba Setups. É também o 1º
+#      dos 2 pré-requisitos do 1.10 Direcional do Dealer (análogo DDF).
+#  17. CALIBRAGEM VWAP CORRIGIDA: bandas por DESVIO PADRÃO ponderado por
+#      volume (modo da aula), com multiplicadores POR ATIVO —
+#      SPY 0.14/0.28/0.42 · QQQ 0.235/0.47/0.705 — e seletor de modo
+#      (σ ou %) nas preferências. Antes o SPY usava por engano a
+#      calibragem do QQQ, e as bandas eram em % fixa do VWAP.
+#  18. Correção defensiva: calcular_gex devolvia 6 valores nos retornos
+#      antecipados e 7 no caminho normal — uma cadeia vazia derrubava o
+#      painel inteiro (ValueError no unpacking). Agora devolve sempre 7.
+#
+# Novidades herdadas da v3.1:
 #   1. VISÃO DUPLA: SPY + QQQ lado a lado na mesma tela, com LEITURA
 #      CRUZADA automática (regra: os muros do SPY são os mais fortes do
 #      mercado; queda no QQQ tende a frear quando o SPY encosta no put
@@ -55,9 +113,9 @@
 #      cabeçalho institucional PrumoQuant; disciplina em linha discreta c/
 #      popover; balanço comprador×vendedor logo abaixo do gamma (pedido do
 #      operador); Preço×VWAP opcional com BANDAS calibráveis por ativo
-#      (estilo Quantico, % do VWAP); aba com gráfico TradingView embutido;
-#      conversão ES/NQ robusta a fim de semana (cascata 1m→1h→diário) com
-#      aviso quando indisponível.
+#      (estilo Quantico); aba com gráfico TradingView embutido; conversão
+#      ES/NQ robusta a fim de semana (cascata 1m→1h→diário) com aviso
+#      quando indisponível.
 #
 # HONESTIDADE TÉCNICA (não remover):
 #   - Dados yfinance: gratuitos e ATRASADOS (~15 min em opções); open
@@ -66,8 +124,9 @@
 #     9h30 de NY não existe fluxo de opções para ninguém.
 #   - O "score de abertura" é um ESCORE HEURÍSTICO (nota composta de
 #     fatores com pesos), não probabilidade estatística real.
-#   - Net premium é estimativa por diferença de volume + inferência
-#     bid/ask, não fluxo de tick.
+#   - Net premium e fluxo por strike são ESTIMATIVAS por diferença de
+#     volume + inferência bid/ask, não fluxo de tick. Viram fluxo REAL
+#     na Fase 3 (Tradier), sem mudar esta camada visual.
 #   - Ferramenta de ESTUDO. Não é recomendação de investimento.
 # ============================================================================
 
@@ -139,6 +198,27 @@ st.markdown("""
     .disciplina { font-size: 0.78rem; color: #9aa7b4; padding: 2px 0 0 0; }
     .disciplina b { color: #fbbf24; font-weight: 700; }
 
+    /* ---------- Linha discreta de setup (v3.3) ---------- */
+    .setup-linha { font-size: 0.8rem; padding: 6px 12px; border-radius: 8px;
+        background: #10161d; border: 1px solid #1e2936;
+        margin: 2px 0 8px 0; color: #c9d4de; }
+    .setup-linha b { font-weight: 700; }
+
+    /* ---------- Régua de fluxo (estilo Volume Imbalance) ---------- */
+    .fluxobar-wrap { background: #10161d; border: 1px solid #1e2936;
+        border-radius: 8px; padding: 8px 12px 10px 12px;
+        margin: 2px 0 8px 0; }
+    .fluxobar-top { display: flex; justify-content: space-between;
+        flex-wrap: wrap; gap: 4px; font-size: 0.74rem; color: #8b98a5;
+        margin-bottom: 6px; }
+    .fluxobar { display: flex; height: 8px; border-radius: 999px;
+        overflow: hidden; background: #1e2936; }
+    .fluxobar .verde-seg { background: #22c55e; }
+    .fluxobar .verm-seg { background: #ef4444; }
+    .fluxobar-sub { display: flex; justify-content: space-between;
+        flex-wrap: wrap; gap: 4px; font-size: 0.74rem; color: #8b98a5;
+        margin-top: 6px; }
+
     .terminal {
         background: #05100a; border: 1px solid #14532d; border-radius: 10px;
         padding: 18px 22px; font-family: 'Consolas', 'Courier New', monospace;
@@ -176,14 +256,20 @@ with st.sidebar.expander("Preferências de exibição"):
         "Gráfico Preço × VWAP (com bandas)", value=True,
         help="Preço intradiário com VWAP e bandas de desvio (calibragem "
              "estilo Quantico). Aparece na Visão Geral.")
+    MODO_BANDAS = st.selectbox(
+        "Modo das bandas VWAP", ["Desvio padrão (σ)", "Porcentagem (%)"],
+        index=0,
+        help="Desvio padrão = modo da aula (σ do preço típico ponderado "
+             "por volume, acumulado na sessão). Porcentagem = distância "
+             "fixa em % do VWAP.")
     BANDAS_QQQ_TXT = st.text_input(
-        "Bandas VWAP QQQ (%)", "0.235, 0.47, 0.705",
-        help="Multiplicadores de banda em % do VWAP (modo porcentagem), "
-             "separados por vírgula — calibragem da aula.")
+        "Bandas VWAP QQQ", "0.235, 0.47, 0.705",
+        help="Multiplicadores das bandas do QQQ (calibragem da aula), "
+             "separados por vírgula.")
     BANDAS_SPY_TXT = st.text_input(
-        "Bandas VWAP SPY (%)", "0.235, 0.47, 0.705",
-        help="SPY tem calibragem própria — ajuste aqui quando tiver os "
-             "valores da aula.")
+        "Bandas VWAP SPY", "0.14, 0.28, 0.42",
+        help="Multiplicadores das bandas do SPY — a calibragem da aula é "
+             "DIFERENTE da do QQQ. Separados por vírgula.")
     MOSTRAR_TV = st.checkbox(
         "Aba com gráfico TradingView embutido", value=True,
         help="Candles ao vivo do TradingView com VWAP, dentro do painel.")
@@ -325,13 +411,25 @@ def taxa_juros_automatica():
 
 
 def calcular_vwap(hist):
-    """VWAP apenas da sessão regular (9h30–16h NY); pré-mercado fora."""
+    """
+    VWAP apenas da sessão regular (9h30–16h NY); pré-mercado fora.
+
+    Também devolve o σ (desvio padrão do preço típico PONDERADO POR
+    VOLUME, acumulado na sessão) — é ele que alimenta as bandas no modo
+    'Desvio padrão' (calibragem da aula: SPY 0.14/0.28/0.42 ·
+    QQQ 0.235/0.47/0.705). Fórmula: Var = E[p²] − (E[p])², com as
+    médias ponderadas pelo volume acumulado.
+    """
     mask = [(t.time() >= dtime(9, 30)) and (t.time() <= dtime(16, 0))
             for t in hist.index]
     h = hist[mask] if any(mask) else hist
     tipico = (h["High"] + h["Low"] + h["Close"]) / 3
-    vwap = (tipico * h["Volume"]).cumsum() / h["Volume"].cumsum().replace(0, np.nan)
-    return h.index, vwap.ffill()
+    vol = h["Volume"]
+    cum_v = vol.cumsum().replace(0, np.nan)
+    vwap = (tipico * vol).cumsum() / cum_v
+    var = (tipico ** 2 * vol).cumsum() / cum_v - vwap ** 2
+    sigma = np.sqrt(var.clip(lower=0))
+    return h.index, vwap.ffill(), sigma.ffill()
 
 
 def calcular_gex(calls, puts, spot, venc_str, r):
@@ -356,7 +454,9 @@ def calcular_gex(calls, puts, spot, venc_str, r):
 
     gex_df = pd.DataFrame(linhas)
     if gex_df.empty:
-        return gex_df, None, None, None, None, False
+        # Correção v3.2: retornos antecipados devolviam 6 valores e o
+        # chamador desempacota 7 — cadeia vazia derrubava o painel.
+        return gex_df, None, None, None, None, False, {}
 
     por_strike = gex_df.groupby("strike")["gex"].sum().reset_index()
 
@@ -371,10 +471,19 @@ def calcular_gex(calls, puts, spot, venc_str, r):
         por_strike = por_strike[por_strike["gex"].abs() >= 0.01 * pico]
     por_strike = por_strike.reset_index(drop=True)
     if por_strike.empty:
-        return por_strike, None, None, None, None, False
+        return por_strike, None, None, None, None, False, {}
 
-    call_wall = por_strike.loc[por_strike["gex"].idxmax(), "strike"]
-    put_wall = por_strike.loc[por_strike["gex"].idxmin(), "strike"]
+    # v3.3.2 — MURO SÓ EXISTE COM O SINAL CERTO. No 0DTE cedo o lado das
+    # puts pode vir vazio → a banda fica toda positiva e o "idxmin" pegava
+    # a MENOR BARRA POSITIVA como put wall (ex.: put wall 753 ACIMA do
+    # call wall 748 — absurdo que contaminava leitura cruzada e playbook).
+    # Regra: call wall exige GEX máximo > 0; put wall exige GEX mínimo < 0.
+    gmax = float(por_strike["gex"].max())
+    gmin = float(por_strike["gex"].min())
+    call_wall = (por_strike.loc[por_strike["gex"].idxmax(), "strike"]
+                 if gmax > 0 else None)
+    put_wall = (por_strike.loc[por_strike["gex"].idxmin(), "strike"]
+                if gmin < 0 else None)
 
     ordenado = por_strike.sort_values("strike").reset_index(drop=True)
     acum = ordenado["gex"].cumsum().values
@@ -444,6 +553,58 @@ def identificar_barras_chave(por_strike, spot):
         neg["dist"] = (neg["strike"] - spot).abs()
         b["primeira_neg"] = float(neg.loc[neg["dist"].idxmin(), "strike"])
         # Última negativa: a negativa de menor strike (fundo da faixa −)
+        b["ultima_neg"] = float(neg["strike"].min())
+
+    return b
+
+
+def identificar_barras_fluxo(strikes, spot):
+    """
+    FASE 1.3 — As 6 barras-chave do FLUXO INSTITUCIONAL.
+
+    Mesma geometria das barras-chave do gamma, mas aplicada ao fluxo
+    líquido estimado por strike (dicionário {strike: net premium}):
+
+    Lado POSITIVO (instituições compram calls / vendem puts):
+      - primeira+ : suporte institucional mais próximo do preço
+      - maior+    : polo de convicção altista — o preço gravita para ela
+      - última+   : ponto de exaustão da alta (além dela o fluxo morre)
+
+    Lado NEGATIVO (instituições compram puts / vendem calls):
+      - primeira− : primeiro peso baixista real
+      - maior−    : parede dura de venda institucional
+      - última−   : exaustão da queda (ímpeto baixista murcha)
+
+    Anti-chuvisco (análogo do Filtro A): strikes com fluxo abaixo de 1%
+    do pico absoluto são ignorados — estimativa pequena é ruído.
+    """
+    b = {}
+    if not strikes:
+        return b
+    df = pd.DataFrame([{"strike": num(k), "net": num(v)}
+                       for k, v in strikes.items()])
+    df = df[df["net"] != 0]
+    if df.empty:
+        return b
+    pico = df["net"].abs().max()
+    if pico > 0:
+        df = df[df["net"].abs() >= 0.01 * pico]
+    if df.empty:
+        return b
+
+    pos = df[df["net"] > 0].copy()
+    neg = df[df["net"] < 0].copy()
+
+    if not pos.empty:
+        b["maior_pos"] = float(pos.loc[pos["net"].idxmax(), "strike"])
+        pos["dist"] = (pos["strike"] - spot).abs()
+        b["primeira_pos"] = float(pos.loc[pos["dist"].idxmin(), "strike"])
+        b["ultima_pos"] = float(pos["strike"].max())
+
+    if not neg.empty:
+        b["maior_neg"] = float(neg.loc[neg["net"].idxmin(), "strike"])
+        neg["dist"] = (neg["strike"] - spot).abs()
+        b["primeira_neg"] = float(neg.loc[neg["dist"].idxmin(), "strike"])
         b["ultima_neg"] = float(neg["strike"].min())
 
     return b
@@ -583,6 +744,120 @@ def detectar_setup(barras, spot, flip, dominio, cw, pw):
         obs="Aguardar o preço se aproximar de uma barra-chave.")
 
 
+def confirmar_setup_com_fluxo(d):
+    """
+    FASE 1.3 — Confirmações do Fluxo Institucional para os setups.
+
+    Traduz para código a lição "Confirmações do Fluxo Institucional":
+    soma o fluxo líquido estimado ACIMA e ABAIXO do preço e verifica se
+    as instituições estão empurrando JUNTO com o setup detectado
+    (✔ confirma) ou CONTRA (⚠ alerta de armadilha). Grava dentro do
+    próprio setup:
+      fluxo_ok   → True (confirma) / False (alerta) / None (neutro)
+      fluxo_conf → frase pronta para o banner e o playbook
+
+    Honestidade: o fluxo do yfinance é ESTIMADO (diferença de volume +
+    inferência bid/ask). Abaixo de um piso mínimo acumulado, o painel
+    se RECUSA a confirmar ou negar qualquer coisa — ruído não é sinal.
+    """
+    s = d.get("setup")
+    strikes = d.get("strikes") or {}
+    if not s or s.get("codigo") in (None, "—"):
+        return
+    spot = d["spot"]
+    acima = sum(num(v) for k, v in strikes.items() if num(k) > spot)
+    abaixo = sum(num(v) for k, v in strikes.items() if num(k) < spot)
+    total = sum(abs(num(v)) for v in strikes.values())
+
+    PISO = 10_000.0   # abaixo de ~$10K acumulado, a estimativa é ruído
+    if total < PISO:
+        s["fluxo_ok"] = None
+        s["fluxo_conf"] = ("fluxo acumulado ainda pequeno demais para "
+                           "confirmar ou negar o setup (aguardar).")
+        return
+
+    def lado(v):
+        """+1 = fluxo comprador relevante; −1 = vendedor; 0 = neutro."""
+        if v > 0.10 * total:
+            return 1
+        if v < -0.10 * total:
+            return -1
+        return 0
+
+    la, lb = lado(acima), lado(abaixo)
+    cod = s["codigo"]
+    ok, txt = None, None
+
+    if cod == "S1":
+        if la == 1:
+            ok, txt = True, (f"instituições empurram JUNTO — fluxo "
+                             f"{fmt_usd(acima)} positivo acima do preço.")
+        elif la == -1:
+            ok, txt = False, (f"fluxo NEGATIVO logo acima "
+                              f"({fmt_usd(acima)}) → rejeição provável; "
+                              f"rompimento sem apoio institucional.")
+        else:
+            txt = "sem pressão institucional clara acima (neutro)."
+
+    elif cod == "S2":
+        if lb == -1:
+            ok, txt = True, (f"fluxo {fmt_usd(abaixo)} negativo abaixo "
+                             f"reforça a espiral de hedge — sem defesa "
+                             f"compradora.")
+        elif lb == 1:
+            ok, txt = False, (f"fluxo virou POSITIVO abaixo "
+                              f"({fmt_usd(abaixo)}) → armadilha clássica; "
+                              f"provável bounce, não perseguir a venda.")
+        else:
+            txt = "fluxo abaixo ainda misto — rompimento sem combustível."
+
+    elif cod == "S3":
+        if la <= 0:
+            ok, txt = True, ("fluxo fraco/negativo no topo confirma a "
+                             "exaustão da alta.")
+        else:
+            ok, txt = False, (f"instituições SEGUEM adicionando fluxo "
+                              f"positivo acima ({fmt_usd(acima)}) → risco "
+                              f"de continuação; não vender o topo.")
+
+    elif cod == "S4":
+        if lb == 1:
+            ok, txt = True, (f"fluxo virando POSITIVO por baixo "
+                             f"({fmt_usd(abaixo)}) — instituições comprando "
+                             f"a queda; bounce crível.")
+        elif lb == -1:
+            ok, txt = False, (f"fluxo ainda MUITO negativo abaixo "
+                              f"({fmt_usd(abaixo)}) → sem bounce ainda; "
+                              f"risco de flush.")
+        else:
+            txt = "aguardando a virada do fluxo por baixo (neutro)."
+
+    elif cod == "S5":
+        if la == 0 and lb == 0:
+            ok, txt = True, ("fluxo misto/flat dos dois lados — chop "
+                             "confirmado; evitar operar o range.")
+        else:
+            dominante = "COMPRADOR" if (acima + abaixo) > 0 else "VENDEDOR"
+            ok, txt = False, (f"fluxo pende {dominante} — rompimento pode "
+                              f"estar se armando; risco de squeeze se "
+                              f"operar contra.")
+
+    elif cod == "S6":
+        if la == 1:
+            ok, txt = True, (f"instituições APOIAM a defesa — fluxo "
+                             f"{fmt_usd(acima)} positivo acima; bounce com "
+                             f"respaldo.")
+        elif lb == -1 and la <= 0:
+            ok, txt = False, (f"puts pressionando por baixo "
+                              f"({fmt_usd(abaixo)}) sem apoio acima → a "
+                              f"defesa do dealer pode FALHAR (flush).")
+        else:
+            txt = "fluxo ainda neutro em torno da zona de defesa."
+
+    s["fluxo_ok"] = ok
+    s["fluxo_conf"] = txt
+
+
 def aplicar_veto_spy_qqq(dspy, dqqq):
     """
     VETO SPY×QQQ (Fase 1.5) — a regra de ouro do método virando código.
@@ -630,9 +905,16 @@ def aplicar_veto_spy_qqq(dspy, dqqq):
 
 
 def estimar_fluxo(calls, puts, ticker, acumular):
-    """Net premium estimado + fluxo por strike (fotografias de volume)."""
+    """
+    Net premium estimado + fluxo por strike (fotografias de volume).
+
+    v3.2 (Fase 1.3): o mapa por strike agora também é PERSISTIDO em CSV
+    diário — um recarregamento da página não apaga mais a leitura da
+    sessão (a série temporal já tinha essa proteção; o mapa não).
+    """
     k_snap, k_serie, k_strike = f"snap_{ticker}", f"serie_{ticker}", f"strikes_{ticker}"
     arq = f"fluxo_{ticker}_{datetime.now():%Y%m%d}.csv"
+    arq_strikes = f"fluxo_strikes_{ticker}_{datetime.now():%Y%m%d}.csv"
 
     if k_serie not in st.session_state:
         st.session_state[k_serie] = []
@@ -644,6 +926,14 @@ def estimar_fluxo(calls, puts, ticker, acumular):
                 pass
     if k_strike not in st.session_state:
         st.session_state[k_strike] = {}
+        if os.path.exists(arq_strikes):
+            try:
+                df_st = pd.read_csv(arq_strikes).fillna(0.0)
+                st.session_state[k_strike] = {
+                    num(r["strike"]): num(r["net"])
+                    for _, r in df_st.iterrows()}
+            except Exception:
+                pass
 
     atual = {}
     for df, eh_call in ((calls, True), (puts, False)):
@@ -661,12 +951,29 @@ def estimar_fluxo(calls, puts, ticker, acumular):
             d_vol = vol - anterior.get(simb, (0,))[0]
             if d_vol <= 0 or last <= 0:
                 continue
-            meio = (bid + ask) / 2 if (bid > 0 and ask > 0) else last
+            # v3.4 — só classifica com bid/ask válidos dos dois lados
+            # (sem cotação completa não há inferência honesta possível).
+            if bid <= 0 or ask <= 0 or ask <= bid:
+                continue
+            meio = (bid + ask) / 2
             # Filtro de liquidez: spread largo torna a inferência frágil.
-            if bid > 0 and ask > 0 and meio > 0 and (ask - bid) / meio > 0.25:
+            if (ask - bid) / meio > 0.25:
                 continue
             premio = d_vol * last * 100
-            comprador = last >= meio
+            # v3.4 — TERÇOS DO SPREAD (calibração de 06/07/2026): terço
+            # de cima = agressor COMPRADOR; terço de baixo = VENDEDOR; o
+            # miolo é AMBÍGUO e vai para o lixo. Motivo: no 0DTE o theta
+            # derrete os prêmios o dia todo e os prints ficam abaixo do
+            # meio mesmo em pregão comprador — o corte no meio gerava
+            # viés vendedor sistemático (flagrado contra o Volume
+            # Imbalance da Quantico em 06/07).
+            spread = ask - bid
+            if last >= ask - spread / 3.0:
+                comprador = True
+            elif last <= bid + spread / 3.0:
+                comprador = False
+            else:
+                continue
             eh_bull = (eh_call and comprador) or (not eh_call and not comprador)
             if eh_bull:
                 bull += premio
@@ -688,6 +995,12 @@ def estimar_fluxo(calls, puts, ticker, acumular):
                       "net_acum": num(ult["net_acum"]) + (bull - bear)})
         try:
             pd.DataFrame(serie).to_csv(arq, index=False)
+        except Exception:
+            pass
+        try:
+            pd.DataFrame([{"strike": k, "net": v}
+                          for k, v in st.session_state[k_strike].items()]
+                         ).to_csv(arq_strikes, index=False)
         except Exception:
             pass
 
@@ -820,11 +1133,40 @@ def gerar_playbook(t, d, agora_local):
         L.append(f"FLUXO .......: {fmt_usd(na)} líquido vendedor (estimado).")
     else:
         L.append("FLUXO .......: sem leitura acumulada nesta sessão.")
+
+    # ----- Mapa das barras-chave do FLUXO (Fase 1.3) -----
+    bf = d.get("barras_fluxo") or {}
+    if bf:
+        def linha_fx(rot, chave):
+            s_ = bf.get(chave)
+            if s_ is None:
+                return None
+            return f"{rot} {s_:.0f}"
+        fpos = [x for x in (linha_fx("1ª+", "primeira_pos"),
+                            linha_fx("maior+", "maior_pos"),
+                            linha_fx("últ+", "ultima_pos")) if x]
+        fneg = [x for x in (linha_fx("1ª−", "primeira_neg"),
+                            linha_fx("maior−", "maior_neg"),
+                            linha_fx("últ−", "ultima_neg")) if x]
+        if fpos:
+            L.append("FLUXO + .....: " + "  |  ".join(fpos)
+                     + "  (instituições empurram)")
+        if fneg:
+            L.append("FLUXO − .....: " + "  |  ".join(fneg)
+                     + "  (instituições bloqueiam)")
+
     cw, pw = d["cw"], d["pw"]
-    if cw and pw:
-        L.append(f"MUROS .......: call wall {cw:.0f} "
-                 f"({(cw-spot)/spot*100:+.2f}%) | put wall {pw:.0f} "
-                 f"({(pw-spot)/spot*100:+.2f}%)")
+    if cw or pw:
+        # v3.3.2: muros podem existir só de um lado (banda toda positiva
+        # ou toda negativa — comum no 0DTE cedo). Mostra o que houver.
+        partes_muro = []
+        if cw:
+            partes_muro.append(f"call wall {cw:.0f} "
+                               f"({(cw-spot)/spot*100:+.2f}%)")
+        if pw:
+            partes_muro.append(f"put wall {pw:.0f} "
+                               f"({(pw-spot)/spot*100:+.2f}%)")
+        L.append("MUROS .......: " + " | ".join(partes_muro))
 
         # ----- Mapa das barras-chave (Fase 1.1) -----
         barras = d.get("barras") or {}
@@ -855,6 +1197,20 @@ def gerar_playbook(t, d, agora_local):
         if s and s["codigo"] != "—":
             L.append(f"<span class='destaque'>▶ SETUP {s['codigo']} — "
                      f"{s['nome'].upper()} · viés {s['vies']}</span>")
+            # v3.4 — SINAL SIMPLES (estilo Striking Bell): sem jargão.
+            if s.get("veto"):
+                acao = "NÃO OPERAR (veto do SPY)"
+            elif s.get("status") == "iminente" or "aguardar" in s["vies"].lower():
+                acao = "AGUARDAR confirmação"
+            elif "COMPRADOR" in s["vies"]:
+                acao = "viés de COMPRA"
+            elif "VENDEDOR" in s["vies"]:
+                acao = "viés de VENDA"
+            else:
+                acao = "FICAR DE FORA"
+            L.append(f"  <span class='destaque'>sinal simples: {acao} · "
+                     f"alvo: {s['alvo']} · desmonta se: "
+                     f"{s['invalidacao']}</span>")
             L.append(f"  gatilho .....: {s['gatilho']}")
             L.append(f"  alvo ........: {s['alvo']}")
             L.append(f"  invalidação .: {s['invalidacao']}")
@@ -864,6 +1220,14 @@ def gerar_playbook(t, d, agora_local):
             elif s.get("confirmacao"):
                 L.append(f"  <span class='titulo'>✔ {s['confirmacao']}"
                          f"</span>")
+            # ----- Confirmação pelo FLUXO (Fase 1.3) -----
+            if s.get("fluxo_conf"):
+                cls_fx = ("titulo" if s.get("fluxo_ok") else
+                          "neg" if s.get("fluxo_ok") is False else "aviso")
+                pref = ("✔" if s.get("fluxo_ok") else
+                        "⚠" if s.get("fluxo_ok") is False else "·")
+                L.append(f"  <span class='{cls_fx}'>{pref} fluxo inst.: "
+                         f"{s['fluxo_conf']}</span>")
             L.append(f"  <span class='aviso'>{s['obs']}</span>")
             L.append("")
         elif s:
@@ -871,21 +1235,29 @@ def gerar_playbook(t, d, agora_local):
             L.append("")
         L.append("<span class='titulo'>CENÁRIOS (estudo, não recomendação)"
                  "</span>")
-        if abs(spot - cw) / spot < 0.0015:
-            L.append(f"[1] Preço COLADO no call wall ({cw:.2f}): zona de "
-                     f"realização — NÃO PERSEGUIR compra aqui.")
+        if cw and pw:
+            if abs(spot - cw) / spot < 0.0015:
+                L.append(f"[1] Preço COLADO no call wall ({cw:.2f}): zona "
+                         f"de realização — NÃO PERSEGUIR compra aqui.")
+            else:
+                L.append(f"[1] SE sustentar acima do VWAP e do put wall "
+                         f"({pw:.2f}) com fluxo comprador → call wall "
+                         f"({cw:.2f}) como ímã. Invalidação: perda do VWAP "
+                         f"c/ fluxo vendedor.")
+            if abs(spot - pw) / spot < 0.0015:
+                L.append(f"[2] Preço COLADO no put wall ({pw:.2f}): freio "
+                         f"por hedge — NÃO PERSEGUIR venda aqui.")
+            else:
+                L.append(f"[2] SE perder o VWAP com fluxo vendedor → put "
+                         f"wall ({pw:.2f}) vira alvo/suporte. Invalidação: "
+                         f"retomada do VWAP.")
         else:
-            L.append(f"[1] SE sustentar acima do VWAP e do put wall "
-                     f"({pw:.2f}) com fluxo comprador → call wall ({cw:.2f}) "
-                     f"como ímã. Invalidação: perda do VWAP c/ fluxo "
-                     f"vendedor.")
-        if abs(spot - pw) / spot < 0.0015:
-            L.append(f"[2] Preço COLADO no put wall ({pw:.2f}): freio por "
-                     f"hedge — NÃO PERSEGUIR venda aqui.")
-        else:
-            L.append(f"[2] SE perder o VWAP com fluxo vendedor → put wall "
-                     f"({pw:.2f}) vira alvo/suporte. Invalidação: retomada "
-                     f"do VWAP.")
+            lado_ok = "call wall" if cw else "put wall"
+            L.append(f"[!] Banda de gamma toda de um lado neste ciclo — só "
+                     f"há {lado_ok} definido. Sem o par de muros, os "
+                     f"cenários completos ficam suspensos (comum no 0DTE "
+                     f"cedo; normaliza conforme o pregão popula o outro "
+                     f"lado).")
     L.append("")
     L.append("<span class='aviso'>Premissas: dealers vendidos (convenção), "
              "dados gratuitos/atrasados, fluxo estimado. Ferramenta de "
@@ -963,6 +1335,108 @@ def cartao(rotulo, valor, sub="", classe=""):
             f"<div class='sub'>{sub}</div></div>")
 
 
+def linha_setup(d):
+    """
+    v3.3 — Setup em UMA linha discreta, a pedido do operador: o banner
+    grande poluía a Visão Geral. A versão completa (gatilho, alvo,
+    invalidação, observações) mora na aba Setups & Playbook.
+    """
+    s = d.get("setup")
+    if not s or s["codigo"] == "—":
+        return
+    if s.get("veto"):
+        cor, icone = "#f87171", "⛔"
+        cauda = "VETO SPY×QQQ — detalhes em Setups"
+    elif s.get("status") == "iminente":
+        cor, icone = "#fbbf24", "◔"
+        cauda = f"alvo {s['alvo']}"
+    elif "COMPRADOR" in s["vies"]:
+        cor, icone = "#22c55e", "▲"
+        cauda = f"alvo {s['alvo']}"
+    elif "VENDEDOR" in s["vies"]:
+        cor, icone = "#f87171", "▼"
+        cauda = f"alvo {s['alvo']}"
+    else:
+        cor, icone = "#9ca3af", "●"
+        cauda = str(s["alvo"])
+    fx = ""
+    if s.get("fluxo_ok") is True:
+        fx = " · <span style='color:#22c55e;'>fluxo ✔</span>"
+    elif s.get("fluxo_ok") is False:
+        fx = " · <span style='color:#f87171;'>fluxo ⚠</span>"
+    st.markdown(
+        f"<div class='setup-linha'>"
+        f"<span style='color:{cor};font-weight:700;'>{icone} "
+        f"{s['codigo']}</span> · {s['nome']} · "
+        f"<b style='color:{cor};'>{s['vies']}</b> · {cauda}{fx}</div>",
+        unsafe_allow_html=True)
+
+
+def barra_fluxo_resumo(d):
+    """
+    v3.3 — Régua de fluxo no estilo 'Volume Imbalance' da Quantico:
+    % comprador × % vendedor da sessão, valores em dólar, NET e o top
+    strike (o strike com maior fluxo absoluto). Leitura de relance de
+    quem está pagando prêmio — substitui os cartões grandes na primeira
+    dobra da Visão Geral.
+    """
+    bull, bear = d["bull_acum"], d["bear_acum"]
+    total = bull + bear
+    if total <= 0:
+        st.caption("Fluxo da sessão indisponível (mercado fechado ou "
+                   "ainda acumulando — opções só negociam após 9h30 NY).")
+        return
+    pb = 100 * bull / total
+    pv = 100 - pb
+    net = d["net_acum"]
+    rot = "Comprador" if net >= 0 else "Vendedor"
+    cor = "#22c55e" if net >= 0 else "#ef4444"
+    top_txt = ""
+    strikes = d.get("strikes") or {}
+    if strikes:
+        k_top = max(strikes, key=lambda k: abs(num(strikes[k])))
+        v_top = num(strikes[k_top])
+        cor_top = "#22c55e" if v_top >= 0 else "#ef4444"
+        top_txt = (f" · top strike <span style='color:{cor_top};'>"
+                   f"{num(k_top):.0f} ({fmt_usd(v_top)})</span>")
+    # v3.4 — janela recente (~30 min): o acumulado do dia esconde as
+    # viradas da tarde. Linguagem simples: o que estão fazendo AGORA.
+    rec_html = ""
+    serie = d.get("serie") or []
+    if len(serie) >= 2:
+        base = serie[max(0, len(serie) - 30)]   # ~1 ponto por minuto
+        rb = num(serie[-1]["bull_acum"]) - num(base["bull_acum"])
+        rv = num(serie[-1]["bear_acum"]) - num(base["bear_acum"])
+        rt = rb + rv
+        if rt > 0:
+            prb = 100 * rb / rt
+            if prb >= 60:
+                agora = (f"<span style='color:#22c55e;font-weight:700;'>"
+                         f"COMPRANDO agora ({prb:.0f}%)</span>")
+            elif prb <= 40:
+                agora = (f"<span style='color:#ef4444;font-weight:700;'>"
+                         f"VENDENDO agora ({100 - prb:.0f}%)</span>")
+            else:
+                agora = ("<span style='color:#eab308;font-weight:700;'>"
+                         "em DISPUTA agora</span>")
+            rec_html = (f"<div class='fluxobar-sub'>"
+                        f"<span>Últimos ~30 min: instituições {agora}"
+                        f"</span><span>NET recente {fmt_usd(rb - rv)}"
+                        f"</span></div>")
+    st.markdown(
+        f"<div class='fluxobar-wrap'>"
+        f"<div class='fluxobar-top'>"
+        f"<span><span style='color:#22c55e;'>▲ {pb:.0f}% {fmt_usd(bull)}"
+        f"</span> &nbsp;·&nbsp; <span style='color:#ef4444;'>▼ {pv:.0f}% "
+        f"{fmt_usd(bear)}</span></span>"
+        f"<span>NET <b style='color:{cor};'>{fmt_usd(net)} {rot}</b>"
+        f"{top_txt}</span></div>"
+        f"<div class='fluxobar'>"
+        f"<div class='verde-seg' style='width:{pb:.1f}%;'></div>"
+        f"<div class='verm-seg' style='width:{pv:.1f}%;'></div>"
+        f"</div>{rec_html}</div>", unsafe_allow_html=True)
+
+
 def faixa_setup(d):
     """Banner destacado do setup detectado, para leitura de relance."""
     s = d.get("setup")
@@ -994,6 +1468,17 @@ def faixa_setup(d):
     elif conf:
         extra = (f"<div style='color:#22c55e;font-size:0.8rem;"
                  f"margin-top:4px;'>✔ {conf}</div>")
+    # ----- Confirmação pelo Fluxo Institucional (Fase 1.3) -----
+    fx = s.get("fluxo_conf")
+    if fx and cod != "—":
+        if s.get("fluxo_ok") is True:
+            cfx, ifx = "#22c55e", "✔"
+        elif s.get("fluxo_ok") is False:
+            cfx, ifx = "#f87171", "⚠"
+        else:
+            cfx, ifx = "#9ca3af", "·"
+        extra += (f"<div style='color:{cfx};font-size:0.8rem;"
+                  f"margin-top:3px;'>{ifx} Fluxo institucional: {fx}</div>")
     st.markdown(
         f"<div style='background:{fundo};border:1px solid {cor_borda};"
         f"border-radius:10px;padding:10px 16px;margin:4px 0 10px 0;'>"
@@ -1073,7 +1558,7 @@ def processar(ticker, acumular_fluxo):
     if hist is None or hist.empty or calls is None:
         return None
     spot = float(hist["Close"].iloc[-1])
-    idx_vwap, vwap = calcular_vwap(hist)
+    idx_vwap, vwap, vwap_sigma = calcular_vwap(hist)
     vwap_atual = float(vwap.iloc[-1]) if not vwap.dropna().empty else None
     por_strike, cw, pw, flip, dominio, venc_hoje, barras = calcular_gex(
         calls, puts, spot, venc, TAXA_JUROS)
@@ -1083,21 +1568,37 @@ def processar(ticker, acumular_fluxo):
     ultimo = hist.index[-1]
     atraso = (pd.Timestamp.now(tz=ultimo.tz) - ultimo).total_seconds() / 60
     serie, strikes = estimar_fluxo(calls, puts, ticker, acumular_fluxo)
+    barras_fluxo = identificar_barras_fluxo(strikes, spot)
     na = num(serie[-1]["net_acum"]) if serie else 0.0
-    return dict(ticker=ticker, hist=hist, prev_close=prev_close, spot=spot,
-                idx_vwap=idx_vwap, vwap=vwap, vwap_atual=vwap_atual,
-                por_strike=por_strike, cw=cw, pw=pw, flip=flip,
-                dominio=dominio, venc=venc, venc_hoje=venc_hoje,
-                barras=barras, setup=setup, ultimo=ultimo, atraso=atraso,
-                fut_nome=fut_nome, fut_preco=fut_preco, fut_razao=fut_razao,
-                serie=serie, strikes=strikes, net_acum=na,
-                bull_acum=num(serie[-1]["bull_acum"]) if serie else 0.0,
-                bear_acum=num(serie[-1]["bear_acum"]) if serie else 0.0)
+    d = dict(ticker=ticker, hist=hist, prev_close=prev_close, spot=spot,
+             idx_vwap=idx_vwap, vwap=vwap, vwap_sigma=vwap_sigma,
+             vwap_atual=vwap_atual,
+             por_strike=por_strike, cw=cw, pw=pw, flip=flip,
+             dominio=dominio, venc=venc, venc_hoje=venc_hoje,
+             barras=barras, setup=setup, ultimo=ultimo, atraso=atraso,
+             fut_nome=fut_nome, fut_preco=fut_preco, fut_razao=fut_razao,
+             serie=serie, strikes=strikes, barras_fluxo=barras_fluxo,
+             net_acum=na,
+             bull_acum=num(serie[-1]["bull_acum"]) if serie else 0.0,
+             bear_acum=num(serie[-1]["bear_acum"]) if serie else 0.0)
+    # FASE 1.3: confirma (✔) ou alerta (⚠) o setup detectado pelo fluxo.
+    confirmar_setup_com_fluxo(d)
+    return d
 
 
 def grafico_gex(d, altura=340, horizontal=False):
-    faixa = d["por_strike"][(d["por_strike"]["strike"] > d["spot"] * 0.965) &
-                            (d["por_strike"]["strike"] < d["spot"] * 1.035)]
+    # Guarda defensiva (v3.3.1): de madrugada/pré-mercado cedo o yfinance
+    # às vezes devolve a cadeia com IV/OI zerados → por_strike chega
+    # VAZIO e sem colunas; indexar "strike" estourava KeyError e
+    # derrubava o app inteiro. Sem curva, devolvemos None e o chamador
+    # mostra um aviso amigável (volta sozinho no próximo refresh).
+    ps_g = d.get("por_strike")
+    if ps_g is None or ps_g.empty or "strike" not in ps_g.columns:
+        return None
+    faixa = ps_g[(ps_g["strike"] > d["spot"] * 0.965) &
+                 (ps_g["strike"] < d["spot"] * 1.035)]
+    if faixa.empty:
+        return None
     cores = ["#22c55e" if g >= 0 else "#3b82f6" for g in faixa["gex"]]
 
     # ---------- MODO CELULAR (Fase 2.2): barras HORIZONTAIS ----------
@@ -1192,6 +1693,127 @@ def grafico_gex(d, altura=340, horizontal=False):
                             f"(venc. {d['venc']}){aviso_0dte}")
     fig.update_yaxes(tickformat="~s")
     return tema(fig, altura)
+
+
+def grafico_fluxo_strike(d, altura=340, horizontal=False):
+    """
+    FASE 1.3 — Fluxo Institucional por strike (o 2º indicador do método).
+
+    Barras VERDES = fluxo líquido COMPRADOR no strike (calls compradas /
+    puts vendidas); VERMELHAS = VENDEDOR (puts compradas / calls
+    vendidas). Mesma janela de strikes do gráfico de gamma (±3,5% do
+    spot) para leitura lado a lado — Delta-Hedging mostra ONDE o dealer
+    defende; este gráfico mostra se as instituições estão empurrando
+    JUNTO ou CONTRA. Anti-chuvisco: strikes com fluxo abaixo de 1% do
+    pico são ocultados (análogo do Filtro A). Retorna None sem dados.
+    """
+    strikes = d.get("strikes") or {}
+    if not strikes:
+        return None
+    df = pd.DataFrame([{"strike": num(k), "net": num(v)}
+                       for k, v in strikes.items()])
+    df = df[df["net"] != 0]
+    if df.empty:
+        return None
+    pico = df["net"].abs().max()
+    if pico > 0:
+        df = df[df["net"].abs() >= 0.01 * pico]
+    faixa = df[(df["strike"] > d["spot"] * 0.965) &
+               (df["strike"] < d["spot"] * 1.035)].sort_values("strike")
+    if faixa.empty:
+        return None
+    cores = ["#22c55e" if v >= 0 else "#ef4444" for v in faixa["net"]]
+    titulo = (f"{d['ticker']} — Fluxo Institucional por Strike "
+              f"(estimado · sessão)")
+
+    # ---------- MODO CELULAR: barras horizontais ----------
+    if horizontal:
+        fig = go.Figure()
+        fig.add_bar(y=faixa["strike"], x=faixa["net"], orientation="h",
+                    marker_color=cores)
+        fig.add_hline(y=d["spot"], line_dash="dot", line_color="#e6edf3",
+                      annotation_text=f"Spot {d['spot']:.2f}",
+                      annotation_position="top right",
+                      annotation_font_color="#e6edf3")
+        fig.update_layout(title=titulo)
+        fig.update_xaxes(tickprefix="$", tickformat="~s")
+        return tema(fig, altura)
+
+    # ---------- MODO DESKTOP: barras verticais ----------
+    fig = go.Figure()
+    fig.add_bar(x=faixa["strike"], y=faixa["net"], marker_color=cores)
+    fig.add_vline(x=d["spot"], line_dash="dot", line_color="#e6edf3",
+                  annotation_text=f"Spot {d['spot']:.2f}",
+                  annotation_position="top",
+                  annotation_font_color="#e6edf3")
+
+    # -------- Marcação das 6 barras-chave do FLUXO --------
+    rotulos = {
+        "primeira_pos": ("1+", "#4ade80"),
+        "maior_pos":    ("MÁX+", "#22c55e"),
+        "ultima_pos":   ("ú+", "#4ade80"),
+        "primeira_neg": ("1−", "#f87171"),
+        "maior_neg":    ("MÁX−", "#ef4444"),
+        "ultima_neg":   ("ú−", "#f87171"),
+    }
+    bf = d.get("barras_fluxo") or {}
+    for chave, (txt, cor) in rotulos.items():
+        strike = bf.get(chave)
+        if strike is None:
+            continue
+        linha = faixa[faixa["strike"] == strike]
+        if linha.empty:
+            continue
+        valor = float(linha["net"].iloc[0])
+        fig.add_annotation(
+            x=strike, y=valor, text=txt, showarrow=False,
+            yshift=16 if valor >= 0 else -16,
+            font=dict(size=11, color=cor, family="Consolas, monospace"),
+            bgcolor="rgba(11,15,20,0.7)")
+
+    fig.update_layout(title=titulo)
+    fig.update_yaxes(tickprefix="$", tickformat="~s")
+    return tema(fig, altura)
+
+
+def grafico_ddf_previa(d, altura=280, key=""):
+    """
+    v3.3 — PRÉVIA do Direcional do Dealer (nosso análogo do DDF).
+
+    Mesmo visual do DDF da Quantico: % do prêmio COMPRADOR × %
+    VENDEDOR ao longo da sessão, com a zona neutra 40–60 sombreada.
+    Fora da faixa = dominância clara de um lado; oscilação dentro da
+    faixa = disputa/chop (cuidado com direcional).
+
+    HONESTIDADE: isto é uma PRÉVIA construída SÓ com o Fluxo (1.3).
+    O Direcional do Dealer completo (item 1.10 do roteiro) combina
+    GEX + Fluxo + Time Pressure numa seta única com direção, alvo e
+    limite — nasce depois do 1.8.
+    """
+    serie = d.get("serie") or []
+    if len(serie) < 3:
+        return
+    df = pd.DataFrame(serie)
+    tot = (df["bull_acum"] + df["bear_acum"]).replace(0, np.nan)
+    pct_b = (100 * df["bull_acum"] / tot).ffill()
+    if pct_b.dropna().empty:
+        return
+    pct_v = 100 - pct_b
+    f = go.Figure()
+    f.add_hrect(y0=40, y1=60, fillcolor="#1e2936", opacity=0.55,
+                line_width=0)
+    f.add_hline(y=60, line_dash="dot", line_color="#fbbf24", line_width=1)
+    f.add_hline(y=40, line_dash="dot", line_color="#fbbf24", line_width=1)
+    f.add_scatter(x=df["hora"], y=pct_b, name="% Comprador",
+                  line=dict(color="#60a5fa", width=1.6))
+    f.add_scatter(x=df["hora"], y=pct_v, name="% Vendedor",
+                  line=dict(color="#ef4444", width=1.6))
+    ult_b = float(pct_b.iloc[-1])
+    f.update_layout(title=f"Direcional do Dealer (prévia) — Comprador "
+                          f"{ult_b:.1f}% × Vendedor {100 - ult_b:.1f}%")
+    f.update_yaxes(range=[0, 100], ticksuffix="%")
+    st.plotly_chart(tema(f, altura), use_container_width=True,
+                    key=f"ddf_{key}_{d['ticker']}")
 
 
 def cartoes_do_ativo(d, mobile=False):
@@ -1429,21 +2051,38 @@ def grafico_balanco(d, altura=280, key=""):
 
 
 def grafico_preco_vwap(d, altura=290, key=""):
-    """Preço × VWAP com bandas de desvio (calibragem estilo Quantico)."""
+    """
+    Preço × VWAP com bandas CALIBRADAS POR ATIVO (estilo Quantico).
+
+    Modo desvio padrão (o da aula): banda = VWAP ± k·σ, onde σ é o
+    desvio padrão do preço típico ponderado por volume, acumulado na
+    sessão. Multiplicadores da aula: SPY 0.14/0.28/0.42 ·
+    QQQ 0.235/0.47/0.705.
+    Modo porcentagem (alternativo): banda = VWAP × (1 ± k/100).
+    """
     f = go.Figure()
-    # Bandas em % do VWAP (modo porcentagem, como na aula) — ao fundo:
+    usar_sigma = MODO_BANDAS.startswith("Desvio")
+    sigma = d.get("vwap_sigma")
     for k_ in BANDAS_VWAP.get(d["ticker"], []):
-        f.add_scatter(x=d["idx_vwap"], y=d["vwap"] * (1 + k_ / 100.0),
+        if usar_sigma and sigma is not None:
+            sup = d["vwap"] + k_ * sigma
+            inf = d["vwap"] - k_ * sigma
+        else:
+            sup = d["vwap"] * (1 + k_ / 100.0)
+            inf = d["vwap"] * (1 - k_ / 100.0)
+        f.add_scatter(x=d["idx_vwap"], y=sup,
                       line=dict(color="#2dd4bf", width=0.8, dash="dot"),
                       showlegend=False, hoverinfo="skip")
-        f.add_scatter(x=d["idx_vwap"], y=d["vwap"] * (1 - k_ / 100.0),
+        f.add_scatter(x=d["idx_vwap"], y=inf,
                       line=dict(color="#2dd4bf", width=0.8, dash="dot"),
                       showlegend=False, hoverinfo="skip")
     f.add_scatter(x=d["hist"].index, y=d["hist"]["Close"], name="Preço",
                   line=dict(color="#eab308", width=1.6))
     f.add_scatter(x=d["idx_vwap"], y=d["vwap"], name="VWAP",
                   line=dict(color="#a78bfa", width=1.7))
-    f.update_layout(title="Preço × VWAP + bandas")
+    modo_txt = "σ" if usar_sigma else "%"
+    f.update_layout(title=f"Preço × VWAP + bandas ({modo_txt} · "
+                          f"calibragem {d['ticker']})")
     st.plotly_chart(tema(f, altura), use_container_width=True,
                     key=f"vw_{key}_{d['ticker']}")
 
@@ -1451,9 +2090,14 @@ def grafico_preco_vwap(d, altura=290, key=""):
 # ------------------------- blocos das abas -------------------------
 
 def bloco_visao_geral(d):
-    cartoes_do_ativo(d, mobile=MODO_CELULAR)
-    faixa_setup(d)
-    tabela_conversao(d)
+    """
+    v3.3 — Cockpit limpo (estilo Quantico): setup em 1 linha, régua de
+    fluxo, gamma + fluxo por strike compactos. Cartões de níveis,
+    conversão ES/NQ e Preço×VWAP ficam em expanders RECOLHIDOS abaixo
+    dos gráficos (o botão ver/ocultar pedido pelo operador).
+    """
+    linha_setup(d)
+    barra_fluxo_resumo(d)
     if janela_abertura:
         sc, gp = score_abertura(d["spot"], d["prev_close"], d["flip"],
                                 d["cw"], d["pw"], d["dominio"], d["hist"])
@@ -1461,20 +2105,39 @@ def bloco_visao_geral(d):
                                       d["prev_close"], d["cw"], d["pw"],
                                       d["flip"], d["dominio"], sc, gp,
                                       agora_ny), unsafe_allow_html=True)
-    st.plotly_chart(grafico_gex(d, 520 if MODO_CELULAR else 360,
-                                horizontal=MODO_CELULAR),
-                    use_container_width=True, key=f"vg_gex_{d['ticker']}")
-    # Pedido do operador: o balanço comprador × vendedor logo abaixo
-    # do gamma — "quem está ganhando" é leitura de primeira necessidade.
-    grafico_balanco(d, key="vg")
+    fig_gx = grafico_gex(d, 500 if MODO_CELULAR else 330,
+                         horizontal=MODO_CELULAR)
+    if fig_gx is not None:
+        st.plotly_chart(fig_gx, use_container_width=True,
+                        key=f"vg_gex_{d['ticker']}")
+    else:
+        st.info("Curva de gamma indisponível neste ciclo (IV/OI ainda "
+                "zerados no yfinance — comum de madrugada e no comecinho "
+                "do pré-mercado). Volta sozinha no próximo refresh.")
+    fig_fx = grafico_fluxo_strike(d, 460 if MODO_CELULAR else 280,
+                                  horizontal=MODO_CELULAR)
+    if fig_fx is not None:
+        st.plotly_chart(fig_fx, use_container_width=True,
+                        key=f"vg_fx_{d['ticker']}")
+    with st.expander("🔎 Níveis em detalhe — Spot · VWAP · muros · flip · "
+                     "NET · conversão ES/NQ"):
+        cartoes_do_ativo(d, mobile=MODO_CELULAR)
+        tabela_conversao(d)
     if MOSTRAR_VWAP:
-        grafico_preco_vwap(d, key="vg")
+        with st.expander("📈 Preço × VWAP + bandas (calibragem por ativo)"):
+            grafico_preco_vwap(d, key="vg")
 
 
 def bloco_gamma(d):
-    st.plotly_chart(grafico_gex(d, 560 if MODO_CELULAR else 470,
-                                horizontal=MODO_CELULAR),
-                    use_container_width=True, key=f"dh_gex_{d['ticker']}")
+    fig_gx = grafico_gex(d, 560 if MODO_CELULAR else 470,
+                         horizontal=MODO_CELULAR)
+    if fig_gx is not None:
+        st.plotly_chart(fig_gx, use_container_width=True,
+                        key=f"dh_gex_{d['ticker']}")
+    else:
+        st.info("Curva de gamma indisponível neste ciclo (IV/OI ainda "
+                "zerados no yfinance — comum de madrugada e no comecinho "
+                "do pré-mercado). Volta sozinha no próximo refresh.")
     if d.get("barras"):
         st.caption("Barras-chave: 1+ primeira positiva (linha de defesa) · "
                    "MÁX+ maior positiva (ímã do dia) · ú+ última positiva "
@@ -1484,6 +2147,32 @@ def bloco_gamma(d):
 
 
 def bloco_fluxo(d):
+    """
+    FASE 1.3 — a aba Fluxo abre com a régua da sessão e o indicador por
+    strike (a estrela), seguidos da série de net premium, da PRÉVIA do
+    Direcional do Dealer (DDF) e do balanço em rosca.
+    """
+    barra_fluxo_resumo(d)
+    fig_fx = grafico_fluxo_strike(d, 520 if MODO_CELULAR else 360,
+                                  horizontal=MODO_CELULAR)
+    if fig_fx is not None:
+        st.plotly_chart(fig_fx, use_container_width=True,
+                        key=f"fx_strike_{d['ticker']}")
+        st.caption("Barras-chave do FLUXO: 1+ primeira positiva (suporte "
+                   "institucional) · MÁX+ maior positiva (polo de convicção "
+                   "altista — o preço gravita para ela) · ú+ última positiva "
+                   "(exaustão da alta) · 1− primeira negativa (peso baixista "
+                   "real) · MÁX− maior negativa (parede dura) · ú− última "
+                   "negativa (exaustão da queda). Fluxo ESTIMADO (yfinance) "
+                   "— vira fluxo real na Fase 3 (Tradier).")
+    else:
+        if ESTADO == "aberto":
+            st.info("Fluxo por strike em construção — acumula a partir do "
+                    "2º ciclo de atualização após a abertura (9h30 NY).")
+        else:
+            st.info("Fluxo institucional por strike volta com o mercado "
+                    "aberto (opções não negociam no pré-mercado). Se houver "
+                    "leitura salva da sessão de hoje, ela aparece aqui.")
     if len(d["serie"]) >= 2 and (d["bull_acum"] + d["bear_acum"]) > 0:
         df_f = pd.DataFrame(d["serie"])
         f2 = go.Figure()
@@ -1495,22 +2184,8 @@ def bloco_fluxo(d):
         f2.update_yaxes(tickprefix="$", tickformat="~s")
         st.plotly_chart(tema(f2, 300), use_container_width=True,
                         key=f"fx_np_{d['ticker']}")
+    grafico_ddf_previa(d, key="fx")
     grafico_balanco(d, key="fx")
-    if d["strikes"]:
-        df_s = pd.DataFrame([{"strike": k, "net": v}
-                             for k, v in d["strikes"].items()])
-        top = (df_s.reindex(df_s["net"].abs()
-                            .sort_values(ascending=False).index)
-               .head(12).sort_values("strike"))
-        f5 = go.Figure(go.Bar(y=[f"{s:.0f}" for s in top["strike"]],
-                              x=top["net"], orientation="h",
-                              marker_color=["#22c55e" if v >= 0 else
-                                            "#ef4444"
-                                            for v in top["net"]]))
-        f5.update_layout(title="Fluxo por strike — sessão")
-        f5.update_xaxes(tickprefix="$", tickformat="~s")
-        st.plotly_chart(tema(f5, 300), use_container_width=True,
-                        key=f"fx_st_{d['ticker']}")
 
 
 def bloco_setups(d):
@@ -1550,6 +2225,75 @@ def bloco_tv(d):
     components.html(html_tv, height=500)
 
 
+# ------------------------- botão "?" das abas (v3.3) -------------------------
+# Popover didático em cada aba: o que é o indicador, como ler, o que
+# confirma. Pedido do operador — aprender sem sair do painel.
+
+AJUDAS = {
+    "visao": ("Visão Geral", """
+O **cockpit**: resumo de todos os indicadores. Ordem de leitura:
+
+1. **Linha do setup** — qual dos 6 padrões está armado (detalhes na aba Setups);
+2. **Régua de fluxo** — quem está pagando prêmio na sessão: % comprador × % vendedor, NET e top strike;
+3. **Gamma por strike** — ONDE o dealer é obrigado a defender (muros, flip, 6 barras-chave);
+4. **Fluxo por strike** — se as instituições empurram JUNTO (confirma) ou CONTRA (armadilha).
+
+Cartões de níveis, conversão ES/NQ e Preço×VWAP ficam recolhidos nos botões abaixo dos gráficos."""),
+    "delta": ("Delta-Hedging (GEX)", """
+As **barras de gamma**: quanto os market makers precisam comprar/vender do ativo para manter o hedge das opções em cada strike.
+
+- Barras **verdes** (gamma+) = defesa passiva → zona **ímã**, estabiliza;
+- Barras **azuis** (gamma−) = defesa ativa → **acelera** o movimento;
+- **Call wall** = teto (maior barra+) · **Put wall** = piso (maior barra−) · **Flip** = divisor de regime;
+- **6 barras-chave** (1ª/maior/última de cada lado) definem os setups.
+
+São suportes/resistências **DINÂMICOS** — valem para o dia, não são topos históricos."""),
+    "fluxo": ("Fluxo Institucional", """
+As **pegadas do dinheiro grande** por strike:
+
+- **Verde** = calls compradas / puts vendidas → pressão **altista**;
+- **Vermelho** = puts compradas / calls vendidas → pressão **baixista**;
+- Confirma os setups: instituições empurrando JUNTO = ✔; CONTRA = ⚠ armadilha;
+- **Direcional do Dealer (prévia)**: % comprador × % vendedor no tempo — fora da faixa 40–60 há dominância clara; dentro, disputa/chop.
+
+Fluxo **estimado** (yfinance, volume + inferência bid/ask) — vira fluxo real na Fase 3 (Tradier)."""),
+    "time": ("Time Pressure", """
+O 3º indicador do método: o **decaimento temporal** (theta/charm) forçando o hedge dos dealers ao longo do dia.
+
+- Barras **positivas** magnetizam o preço para **cima**;
+- Barras **negativas**, para **baixo**;
+- **Picos** = alívio de hedge → zona provável de **pullback**.
+
+Em construção — é a próxima fase (1.8)."""),
+    "setups": ("Setups & Playbook", """
+Os **6 padrões** do método, detectados pela posição do preço frente às barras-chave:
+
+- **S1** Rompimento Altista · **S2** Rompimento Baixista (o MAIS PERIGOSO — exige o SPY junto) · **S3** Pullback no Topo · **S4** Pullback no Fundo · **S5** Consolidação (evitar) · **S6** Proteção no Hedge Negativo (o MAIS ASSERTIVO).
+
+O playbook narra **gatilho, alvo e invalidação**, com confirmação do fluxo institucional e o veto SPY×QQQ aplicados automaticamente."""),
+    "cruzada": ("SPY × QQQ", """
+A **regra de ouro**: SPY = **PERMISSÃO** (o open interest mais profundo do mercado — muros mais fortes); QQQ = **GATILHO** (instrumento de rompimento).
+
+**Nunca operar o QQQ contra o SPY.** O veto automático compara os setups dos dois: direções opostas = ⛔; S2 no QQQ sem S2 no SPY = ⛔; alinhados = ✔ permissão concedida."""),
+    "tv": ("Gráfico TV", """
+Candles do TradingView de apoio visual.
+
+⚠ **O widget público usa cotação ATRASADA (~15 min)** — limitação do TradingView para embeds sem login, não do painel. Tempo real de verdade chega na **Fase 3 (Tradier)**, alimentando nossos próprios gráficos."""),
+}
+
+
+def ajuda_aba(chave):
+    """Botão '?' pequeno com a explicação didática do indicador."""
+    titulo, texto = AJUDAS[chave]
+    if hasattr(st, "popover"):
+        with st.popover("❓", help=f"O que é: {titulo}"):
+            st.markdown(f"**{titulo}**")
+            st.markdown(texto)
+    else:
+        with st.expander(f"❓ O que é: {titulo}"):
+            st.markdown(texto)
+
+
 # ------------------------- montagem das abas -------------------------
 nomes_abas = ["📊 Visão Geral", "🧲 Delta-Hedging", "💰 Fluxo",
               "⏱ Time Pressure", "🎯 Setups & Playbook", "⚖ SPY × QQQ"]
@@ -1558,30 +2302,44 @@ if MOSTRAR_TV:
 abas = st.tabs(nomes_abas)
 
 with abas[0]:
+    ajuda_aba("visao")
     para_cada_ativo(bloco_visao_geral)
 
 with abas[1]:
+    ajuda_aba("delta")
     para_cada_ativo(bloco_gamma)
     st.caption("Regime: acima do flip = gamma+ (dealer amortece; muros "
                "seguram; dia de reversão). Abaixo do flip = gamma− (dealer "
                "acelera; rompimentos andam). Estudo, não recomendação.")
 
 with abas[2]:
+    ajuda_aba("fluxo")
     para_cada_ativo(bloco_fluxo)
+    st.caption("Leitura combinada: o Delta-Hedging mostra ONDE o dealer é "
+               "obrigado a defender; o Fluxo Institucional mostra se as "
+               "instituições estão empurrando JUNTO (✔ confirma o setup) ou "
+               "CONTRA (⚠ armadilha). Fluxo positivo = calls compradas / "
+               "puts vendidas; negativo = puts compradas / calls vendidas.")
 
 with abas[3]:
+    ajuda_aba("time")
     st.markdown("#### Time Pressure — em construção (Fase 1.8)")
     st.markdown(
         "O terceiro indicador do método: a pressão do **decaimento "
         "temporal** (theta/charm) forçando o hedge dos dealers ao longo "
         "do dia. Barras positivas magnetizam o preço para cima; negativas "
         "para baixo; **picos** = alívio de hedge → zona provável de "
-        "pullback. Entra após o Fluxo Institucional por strike (1.3).")
+        "pullback. Com o Fluxo Institucional por strike (1.3) já no ar, "
+        "esta é a próxima fase — e com 1.3 + 1.8 prontos nasce o **1.10 "
+        "Direcional do Dealer** (nosso análogo do DDF): a seta única com "
+        "direção, alvo e limite do hedge.")
 
 with abas[4]:
+    ajuda_aba("setups")
     para_cada_ativo(bloco_setups)
 
 with abas[5]:
+    ajuda_aba("cruzada")
     if "SPY" in dados and "QQQ" in dados:
         st.markdown(leitura_cruzada(dados["SPY"], dados["QQQ"]),
                     unsafe_allow_html=True)
@@ -1591,9 +2349,14 @@ with abas[5]:
 
 if MOSTRAR_TV:
     with abas[6]:
-        st.caption("Candles ao vivo do TradingView com VWAP embutido. A "
-                   "calibragem fina das bandas (0.235 / 0.47 / 0.705, modo "
-                   "porcentagem) o widget público não aceita — por isso as "
-                   "bandas calibradas estão no NOSSO gráfico Preço × VWAP "
-                   "(Visão Geral); aqui fica o candle vivo de apoio.")
+        ajuda_aba("tv")
+        st.caption("Candles do TradingView de apoio. ⚠ O widget público "
+                   "usa cotação ATRASADA (~15 min) — limitação do "
+                   "TradingView para embeds sem login; tempo real de "
+                   "verdade chega na Fase 3 (Tradier). A calibragem das "
+                   "bandas o widget também não aceita por código — "
+                   "configure na mão (engrenagem do VWAP → Desvio Padrão → "
+                   "SPY 0.14/0.28/0.42 · QQQ 0.235/0.47/0.705) ou use o "
+                   "NOSSO Preço × VWAP (Visão Geral), já calibrado por "
+                   "ativo e no modo σ.")
         para_cada_ativo(bloco_tv)
