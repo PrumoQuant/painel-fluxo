@@ -3,7 +3,7 @@
 # PrumoQuant · https://prumoquant.streamlit.app
 # ============================================================================
 # NOVIDADES v3.6 — calibração com dados pareados Quantico (07/07/2026):
-#  D5. MULTI-VENCIMENTO: GEX e Time Pressure somam os 4 vencimentos mais
+#  D5. MULTI-VENCIMENTO: GEX e Time Pressure somam os 6 vencimentos mais
 #      próximos (o hedge do dealer existe em todas as datas abertas, não só
 #      no 0DTE), cada opção com seu T e peso 1/(1+dias/5) — 0DTE dominante.
 #      É o que fecha a divergência de magnitude vs terminal Quantico e deixa
@@ -356,7 +356,7 @@ def buscar_dados(ticker):
     #    para casar a magnitude do dealer com a Quantico (o hedge existe em todas
     #    as datas abertas, não só no 0DTE). Guardamos o venc de cada opção para
     #    calcular o T certo de cada uma. NVENC controla quantos vencimentos entram.
-    NVENC = 4
+    NVENC = 6
     calls = puts = None
     venc = None          # vencimento mais próximo (0DTE), usado para 0DTE flag e rótulo
     vencs = []
@@ -692,20 +692,29 @@ def regua_fluxo_html(comp, vend, fluxo_df=None):
     tot = comp + vend
     p_comp = (comp / tot * 100) if tot > 0 else 50.0
     p_vend = 100.0 - p_comp
-    net = comp - vend
+    net_dia = comp - vend
     if p_comp > 60:
         status, classe = "INSTITUIÇÕES COMPRANDO AGORA", "verde"
     elif p_vend > 60:
         status, classe = "INSTITUIÇÕES VENDENDO AGORA", "vermelho"
     else:
         status, classe = "EM DISPUTA NEUTRA", "amarelo"
-    top_txt = ""
+    # NET por-strike do topo (base da Quantico): o strike de maior |net| do dia.
+    top_txt, net_top, cor_net = "", None, "amarelo"
     if fluxo_df is not None and not fluxo_df.empty and "net" in fluxo_df.columns:
         i = fluxo_df["net"].abs().idxmax()
-        k_top, v_top = float(fluxo_df.loc[i, "strike"]), float(fluxo_df.loc[i, "net"])
-        cor_top = "verde" if v_top >= 0 else "vermelho"
-        top_txt = (f' · TOP STRIKE <span class="{cor_top}">{k_top:.0f} '
-                   f'({fmt_usd(v_top)})</span>')
+        k_top = float(fluxo_df.loc[i, "strike"])
+        net_top = float(fluxo_df.loc[i, "net"])
+        cor_net = "verde" if net_top >= 0 else "vermelho"
+        top_txt = (f' · TOP STRIKE <span class="{cor_net}">{k_top:.0f} '
+                   f'({fmt_usd(net_top)})</span>')
+    # Linha inferior: NET do topo em destaque (como no terminal) + total do dia discreto.
+    if net_top is not None:
+        net_html = (f'<span class="{cor_net}">NET (topo): {fmt_usd(net_top)}</span>'
+                    f'<span style="color:#6b7280"> · dia {fmt_usd(net_dia)}</span>')
+    else:
+        net_html = (f'<span class="{"verde" if net_dia >= 0 else "vermelho"}">'
+                    f'NET: {fmt_usd(net_dia)}</span>')
     return f"""
     <div class="fluxobar-wrap">
         <div class="fluxobar-top">
@@ -718,7 +727,7 @@ def regua_fluxo_html(comp, vend, fluxo_df=None):
         </div>
         <div class="fluxobar-sub">
             <span class="verde">▲ {p_comp:.1f}% ({fmt_usd(comp)})</span>
-            <span class="{'verde' if net >= 0 else 'vermelho'}">NET: {fmt_usd(net)}</span>
+            {net_html}
             <span class="vermelho">▼ {p_vend:.1f}% ({fmt_usd(vend)})</span>
         </div>
     </div>"""
