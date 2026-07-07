@@ -1,11 +1,48 @@
 # ============================================================================
-# PAINEL DE FLUXO DE OPÇÕES — VERSÃO 3.6 "TERMINAL QUANTICO" (ESTUDO)
+# PAINEL DE FLUXO DE OPÇÕES — VERSÃO 3.6 "CALIBRAÇÃO QUANTICO" (ESTUDO)
 # PrumoQuant · https://prumoquant.streamlit.app
 # ============================================================================
-# NOVIDADES v3.6:
-#  - LAYOUT TERMINAL: Integração total baseada na referência visual do Quantico.
-#    Gráficos TradingView lado a lado na esquerda, grade 3x2 de painéis
-#    (Delta Hedging, Inst. Flow, Time Pressure) para QQQ e SPY na direita.
+# NOVIDADES v3.6 — calibração com dados pareados Quantico (07/07/2026):
+#  D1. ESCALA GEX corrigida: Γ·OI·100·S² pleno (removido o fator 1%) →
+#      magnitudes em B, mesma ordem do terminal de referência.
+#  D2. INSTITUTIONAL FLOW por strike agora em NOTIONAL do subjacente
+#      (volume·100·S, sinalizado) — é isso que produz a escala B/T deles.
+#      O prêmio agressor (K/M) continua na régua e no Volume Imbalance.
+#  D3. FILTRO QUANTICO implementado (documentado no tutorial deles):
+#      exclui contratos com último/abertura > 2,0 (já lucraram +100%) ou
+#      < 0,05 (já perderam −95%) — é o que gera a leitura "Q" exclusiva.
+#  D4. VALIDAÇÃO PAREADA 14h01 NY: nosso Time Pressure = $413,6M vs
+#      $437,2M deles (SPY 753, versão não-Q) → precisão ~5%. Nossos
+#      strikes-chave batem com os painéis não-Q deles (753/730).
+#  +  Barras-chave calculadas em janela ±3% do spot (elimina "última
+#      exaustão" absurda tipo 800/675 e alinha ▲/▼ com o gráfico).
+#  +  NOVO: Gráfico de Níveis — candlestick 1min em tempo real (Tradier)
+#      com as linhas do dealer (WALL, TARGET, 1ª positiva/negativa, SETUP 6,
+#      FLIP, VWAP) — substitui a limitação do TradingView gratuito.
+#  +  Régua Volume Imbalance agora mostra o TOP STRIKE, como no terminal.
+#
+# NOVIDADES v3.5:
+#  1. SEGURANÇA: o token Tradier agora vem de st.secrets["TRADIER_TOKEN"].
+#     NUNCA mais colar a chave no código — o repositório é PÚBLICO.
+#     (Streamlit Cloud: app → ⋮ → Settings → Secrets → TRADIER_TOKEN = "...")
+#  2. TEMPO REAL DE VERDADE: spot e fechamento anterior via /markets/quotes;
+#     intraday 1 min via /markets/timesales com session_filter=open (isso
+#     também elimina o velho bug do VWAP contaminado pelo pré-mercado).
+#     Fallback automático para yfinance (~15 min) se a Tradier falhar.
+#  3. ESCALA QUANTICO: GEX = Γ · OI · 100 · S² · 1% (dollar-gamma por 1% de
+#     movimento) → magnitudes em B/M, comparáveis ao terminal Quantico.
+#  4. NOVO — TIME PRESSURE por strike (item 1.8, v1): charm (decaimento do
+#     delta) por strike; calls contribuem +, puts −; picos ATM no 0DTE.
+#     Semântica direcional pendente de validação ao vivo (item 1.9).
+#  5. NOVO — VOLUME IMBALANCE FLOW: fluxo por strike separado em componentes
+#     bull/bear, barras horizontais verde/vermelho como no Quantico.
+#  6. REFORMULAÇÃO VISUAL (2.1): trio de mini-painéis por ativo (Delta
+#     Hedging · Institutional Flow · Time Pressure) com cabeçalho ▲/▼,
+#     barras azuis + maior positiva verde + maior negativa vermelha, linha
+#     tracejada no spot; 7 abas; relógios NY/BR com fuso correto (zoneinfo).
+#  REGRAS PRESERVADAS: whitelist SPY/QQQ · SOMENTE LEITURA (nenhum endpoint
+#  de ordem) · filtros anti-ruído (1% do pico, spread >25%) · veto SPY×QQQ ·
+#  6 barras-chave · 6 setups · mentor de disciplina · modo celular.
 # ============================================================================
 
 import os
@@ -33,7 +70,7 @@ st.markdown("""
     .stApp { background-color: #0a0d12; }
     section[data-testid="stSidebar"] { background-color: #0e141b; }
     h1, h2, h3, h4, p, span, label { color: #e6edf3; }
-    .block-container { max-width: 100%; padding: 1rem 2rem; }
+    .block-container { padding-top: 1.0rem; max-width: 1560px; }
 
     /* ---------- Cabeçalho institucional ---------- */
     .pq-header { display: flex; justify-content: space-between;
@@ -52,6 +89,13 @@ st.markdown("""
     .selo-aberto  { background: #052e16; color: #22c55e; border: 1px solid #14532d; }
     .selo-fechado { background: #450a0a; color: #f87171; border: 1px solid #7f1d1d; }
     .selo-pre     { background: #422006; color: #fbbf24; border: 1px solid #92400e; }
+
+    /* ---------- Abas ---------- */
+    .stTabs [data-baseweb="tab-list"] { gap: 4px; border-bottom: 1px solid #1c2733; }
+    .stTabs [data-baseweb="tab"] { background: transparent; color: #8b98a5;
+        font-size: 0.85rem; padding: 8px 14px; border-radius: 8px 8px 0 0; }
+    .stTabs [aria-selected="true"] { color: #e6edf3; background: #131a22;
+        border-bottom: 2px solid #fbbf24; }
 
     /* ---------- Mini-painel estilo Quantico ---------- */
     .qpanel-head { display: flex; justify-content: space-between;
@@ -135,13 +179,13 @@ def obter_token():
 
 TRADIER_TOKEN = obter_token()
 API_BASE = "https://api.tradier.com/v1"
-WHITELIST = {"SPY", "QQQ"}   # trava de segurança §2.1
+WHITELIST = {"SPY", "QQQ"}   # trava de segurança §2.1 — nunca ampliar sem dupla confirmação
 
 # ----------------------------------------------------------------------------
 # BARRA LATERAL
 # ----------------------------------------------------------------------------
 st.sidebar.title("Configurações")
-MODO_VISAO = st.sidebar.radio("Modo de visão", ["SPY + QQQ lado a lado", "Um ativo"])
+MODO_VISAO = st.sidebar.radio("Modo de visão", ["Um ativo", "SPY + QQQ lado a lado"])
 TICKER_UNICO = st.sidebar.selectbox("Ativo (modo um ativo)", ["SPY", "QQQ"])
 MODO_CELULAR = st.sidebar.checkbox(
     "📱 Modo celular (layout vertical)", value=False,
@@ -162,7 +206,7 @@ with st.sidebar.expander("Preferências de exibição"):
                                ["Desvio padrão (σ)", "Porcentagem (%)"], index=0)
     BANDAS_QQQ_TXT = st.text_input("Bandas VWAP QQQ (%)", "0.235, 0.47, 0.705")
     BANDAS_SPY_TXT = st.text_input("Bandas VWAP SPY (%)", "0.14, 0.28, 0.42")
-    MOSTRAR_TV = st.checkbox("Painéis com gráfico TradingView", value=True)
+    MOSTRAR_TV = st.checkbox("Aba com gráfico TradingView embutido", value=True)
 
 def parse_bandas(txt):
     out = []
@@ -202,6 +246,7 @@ def fmt_usd(v):
     return f"{s}${a:.0f}"
 
 def fx(v, pref="$", nd=2):
+    """Formata número que pode ser None sem quebrar o f-string."""
     return "—" if v is None else f"{pref}{v:.{nd}f}"
 
 def gamma_bs(S, K, T, r, sigma):
@@ -211,6 +256,7 @@ def gamma_bs(S, K, T, r, sigma):
     return norm.pdf(d1) / (S * sigma * np.sqrt(T))
 
 def charm_bs(S, K, T, r, sigma):
+    """Charm = dDelta/dT (decaimento do delta). Base do Time Pressure (1.8 v1)."""
     if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
         return 0.0
     svt = sigma * np.sqrt(T)
@@ -219,7 +265,7 @@ def charm_bs(S, K, T, r, sigma):
     return -norm.pdf(d1) * (2.0 * r * T - d2 * svt) / (2.0 * T * svt)
 
 # ----------------------------------------------------------------------------
-# CAMADA TRADIER
+# CAMADA TRADIER (blindada: timeout 8 s, erros retornados, nunca trava a UI)
 # ----------------------------------------------------------------------------
 def tradier_get(caminho, params):
     if not TRADIER_TOKEN:
@@ -230,7 +276,7 @@ def tradier_get(caminho, params):
                                   "Accept": "application/json"},
                          timeout=8)
         if r.status_code == 401:
-            return None, "401 Unauthorized"
+            return None, "401 Unauthorized — token inválido/expirado (regenere e atualize os Secrets)"
         if r.status_code != 200:
             return None, f"HTTP {r.status_code} em {caminho}"
         return r.json(), None
@@ -240,6 +286,7 @@ def tradier_get(caminho, params):
         return None, f"falha de rede: {e}"
 
 def historico_timesales(ticker):
+    """Intraday 1 min em TEMPO REAL, só sessão regular (mata o bug do pré-mercado)."""
     hoje = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
     j, e = tradier_get("/markets/timesales",
                        {"symbol": ticker, "interval": "1min",
@@ -257,12 +304,16 @@ def historico_timesales(ticker):
     if df.empty or "time" not in df.columns:
         return None
     df["time"] = pd.to_datetime(df["time"])
-    df = df.set_index("time").rename(columns={"high": "High", "low": "Low",
-                                              "close": "Close", "volume": "Volume"})
-    cols = [c for c in ("High", "Low", "Close", "Volume") if c in df.columns]
-    return df[cols] if len(cols) == 4 else None
+    df = df.set_index("time").rename(columns={"open": "Open", "high": "High",
+                                              "low": "Low", "close": "Close",
+                                              "volume": "Volume"})
+    if not all(c in df.columns for c in ("High", "Low", "Close", "Volume")):
+        return None
+    cols = [c for c in ("Open", "High", "Low", "Close", "Volume") if c in df.columns]
+    return df[cols]
 
 def historico_yf(ticker):
+    """Fallback (~15 min de atraso). prepost=False protege o VWAP."""
     try:
         return yf.Ticker(ticker).history(period="1d", interval="1m", prepost=False)
     except Exception:
@@ -270,11 +321,13 @@ def historico_yf(ticker):
 
 @st.cache_data(ttl=20, show_spinner=False)
 def buscar_dados(ticker):
+    """Quotes + timesales + cadeia de opções. Retorna dict; erros como texto."""
     if ticker not in WHITELIST:
-        return {"erro": f"{ticker} fora da whitelist (SPY/QQQ)."}
+        return {"erro": f"{ticker} fora da whitelist (SPY/QQQ) — trava §2.1."}
     erros, fonte = [], "Tradier · tempo real"
     spot = prev = None
 
+    # 1) Cotação em tempo real
     j, e = tradier_get("/markets/quotes", {"symbols": ticker})
     if e:
         erros.append(f"quotes: {e}")
@@ -286,6 +339,7 @@ def buscar_dados(ticker):
             spot = num(q.get("last")) or None
             prev = num(q.get("prevclose")) or None
 
+    # 2) Intraday para VWAP
     hist = historico_timesales(ticker)
     if hist is None or hist.empty:
         hist = historico_yf(ticker)
@@ -293,7 +347,9 @@ def buscar_dados(ticker):
             spot = float(hist["Close"].iloc[-1])
             fonte = "yfinance · ~15 min"
 
-    calls = puts = venc = None
+    # 3) Cadeia de opções (vencimento mais próximo)
+    calls = puts = None
+    venc = None
     j, e = tradier_get("/markets/options/expirations", {"symbol": ticker})
     if e:
         erros.append(f"expirations: {e}")
@@ -313,13 +369,15 @@ def buscar_dados(ticker):
                 ops = [ops]
             dfc = pd.DataFrame(ops)
             if not dfc.empty:
-                dfc = dfc.rename(columns={"open_interest": "openInterest", "last": "lastPrice"})
+                dfc = dfc.rename(columns={"open_interest": "openInterest",
+                                          "last": "lastPrice"})
                 if "greeks" in dfc.columns:
                     def _iv(g):
                         if isinstance(g, dict):
                             for chave in ("mid_iv", "smv_vol", "ask_iv", "bid_iv"):
                                 v = num(g.get(chave))
-                                if v > 0: return v
+                                if v > 0:
+                                    return v
                         return 0.0
                     dfc["impliedVolatility"] = dfc["greeks"].apply(_iv)
                 else:
@@ -373,9 +431,15 @@ def calcular_vwap(hist):
     var = (tipico ** 2 * vol).cumsum() / cum_v - vwap ** 2
     return h.index, vwap.ffill(), np.sqrt(var.clip(lower=0)).ffill()
 
-def identificar_barras_chave(df, spot, col="gex"):
+def identificar_barras_chave(df, spot, col="gex", faixa=0.03):
+    """6 barras-chave (primeira/maior/última, + e −) dentro de ±faixa do spot.
+    A janela ±3% alinha o ▲/▼ do cabeçalho com o gráfico e elimina extremos
+    sem relevância operacional (ex.: 'última exaustão' a 7% do preço)."""
     b = {}
     if df is None or df.empty or col not in df.columns:
+        return b
+    df = df[(df["strike"] >= spot * (1 - faixa)) & (df["strike"] <= spot * (1 + faixa))]
+    if df.empty:
         return b
     pos = df[df[col] > 0].copy()
     neg = df[df[col] < 0].copy()
@@ -392,6 +456,8 @@ def identificar_barras_chave(df, spot, col="gex"):
     return b
 
 def calcular_gex(calls, puts, spot, venc_str, r):
+    """GEX por strike — Descoberta 1: dollar-gamma PLENO (Γ·OI·100·S²),
+    escala em bilhões, mesma ordem de grandeza do terminal Quantico."""
     dias = max((pd.Timestamp(venc_str) - pd.Timestamp.now()).days, 0)
     T = max(dias / 252, 0.5 / 252)
     linhas = []
@@ -404,7 +470,7 @@ def calcular_gex(calls, puts, spot, venc_str, r):
             oi = num(op.get("openInterest"))
             if iv <= 0 or oi <= 0 or not (spot * 0.90 <= k <= spot * 1.10):
                 continue
-            g = gamma_bs(spot, k, T, r, iv) * oi * 100 * spot * spot * 0.01
+            g = gamma_bs(spot, k, T, r, iv) * oi * 100 * spot * spot
             linhas.append({"strike": k, "gex": g if tipo == "call" else -g})
 
     gex_df = pd.DataFrame(linhas)
@@ -413,7 +479,7 @@ def calcular_gex(calls, puts, spot, venc_str, r):
 
     por_strike = gex_df.groupby("strike")["gex"].sum().reset_index()
     pico = por_strike["gex"].abs().max()
-    if pico > 0:
+    if pico > 0:  # filtro A (anti-chuvisco): descarta barras < 1% do pico
         por_strike = por_strike[por_strike["gex"].abs() >= 0.01 * pico]
     por_strike = por_strike.sort_values("strike").reset_index(drop=True)
     if por_strike.empty:
@@ -438,6 +504,8 @@ def calcular_gex(calls, puts, spot, venc_str, r):
     return por_strike, call_wall, put_wall, flip, dominio, venc_hoje
 
 def calcular_time_pressure(calls, puts, spot, venc_str, r):
+    """Time Pressure por strike (1.8 v1): charm/dia × OI × 100 × S.
+    Calls +, puts −. Positivo = decaimento magnetiza p/ cima; picos = alívio → pullback."""
     dias = max((pd.Timestamp(venc_str) - pd.Timestamp.now()).days, 0)
     T = max(dias / 252, 0.5 / 252)
     linhas = []
@@ -461,7 +529,15 @@ def calcular_time_pressure(calls, puts, spot, venc_str, r):
         dft = dft[dft["tp"].abs() >= 0.01 * pico]
     return dft.sort_values("strike").reset_index(drop=True)
 
-def calcular_fluxo_institucional(calls, puts):
+def calcular_fluxo_institucional(calls, puts, spot):
+    """Classificação pelos terços do spread, com duas calibrações Quantico:
+    — Descoberta 3 (FILTRO Q, documentado no tutorial deles): exclui contratos
+      cujo último/abertura > 2,0 (já lucraram +100%) ou < 0,05 (já perderam
+      −95%). É essa limpeza que gera a leitura 'Q' exclusiva do terminal.
+    — Descoberta 2 (NOTIONAL): além do prêmio (K/M, para a régua e o Volume
+      Imbalance), calcula o notional do subjacente (volume·100·S, sinalizado),
+      que é a escala B dos painéis Institutional Flow Q.
+    bull = call comprada OU put vendida · bear = put comprada OU call vendida."""
     comp = vend = 0.0
     mapa = {}
     for df, tipo in ((calls, "call"), (puts, "put")):
@@ -475,28 +551,36 @@ def calcular_fluxo_institucional(calls, puts):
             ultimo = num(row.get("lastPrice"))
             if vol <= 0 or ask <= 0 or bid < 0 or bid >= ask or ultimo <= 0:
                 continue
+            abertura = num(row.get("open"))
+            if abertura > 0:                      # ← FILTRO QUANTICO (Descoberta 3)
+                razao = ultimo / abertura
+                if razao > 2.0 or razao < 0.05:   # +100% de lucro ou −95% de perda
+                    continue                       # contrato exaurido distorce o hedge
             mid = (bid + ask) / 2.0
-            if mid <= 0 or (ask - bid) / mid > 0.25:
+            if mid <= 0 or (ask - bid) / mid > 0.25:   # filtro anti-spread esticado
                 continue
             spread = ask - bid
             terco_baixo = bid + spread / 3.0
             terco_alto = ask - spread / 3.0
             premio = ultimo * vol * 100
-            entrada = mapa.setdefault(k, {"bull": 0.0, "bear": 0.0})
-            if ultimo >= terco_alto:
+            notional = vol * 100 * spot           # ← escala B (Descoberta 2)
+            entrada = mapa.setdefault(k, {"bull": 0.0, "bear": 0.0, "ntl": 0.0})
+            if ultimo >= terco_alto:      # negociado perto do ask = agressão compradora
                 if tipo == "call":
-                    comp += premio; entrada["bull"] += premio
+                    comp += premio; entrada["bull"] += premio; entrada["ntl"] += notional
                 else:
-                    vend += premio; entrada["bear"] += premio
-            elif ultimo <= terco_baixo:
+                    vend += premio; entrada["bear"] += premio; entrada["ntl"] -= notional
+            elif ultimo <= terco_baixo:   # negociado perto do bid = agressão vendedora
                 if tipo == "call":
-                    vend += premio; entrada["bear"] += premio
+                    vend += premio; entrada["bear"] += premio; entrada["ntl"] -= notional
                 else:
-                    comp += premio; entrada["bull"] += premio
+                    comp += premio; entrada["bull"] += premio; entrada["ntl"] += notional
     linhas = [{"strike": k, "bull": v["bull"], "bear": v["bear"],
-               "net": v["bull"] - v["bear"]} for k, v in mapa.items()]
+               "net": v["bull"] - v["bear"], "notional": v["ntl"]}
+              for k, v in mapa.items()]
     if not linhas:
-        return comp, vend, pd.DataFrame(columns=["strike", "bull", "bear", "net"])
+        return comp, vend, pd.DataFrame(
+            columns=["strike", "bull", "bear", "net", "notional"])
     dff = pd.DataFrame(linhas).sort_values("strike").reset_index(drop=True)
     return comp, vend, dff
 
@@ -510,19 +594,40 @@ def detectar_setup(barras, spot, flip, dominio, cw, pw):
     pn, mn, un = barras.get("primeira_neg"), barras.get("maior_neg"), barras.get("ultima_neg")
 
     if pn and perto(pn) and spot >= pn and mp and mp > spot:
-        return dict(codigo="S6", nome="Proteção no Hedge Negativo", vies="COMPRADOR", gatilho=f"teste na 1ª barra− ({pn:.0f})", alvo=f"{mp:.0f}", invalidacao=f"perder {pn:.0f}")
+        return dict(codigo="S6", nome="Proteção no Hedge Negativo", vies="COMPRADOR (bounce)",
+                    gatilho=f"preço testando a 1ª barra− ({pn:.0f}) com ímã positivo em {mp:.0f} acima",
+                    alvo=f"{mp:.0f} (ímã) / retorno ao VWAP",
+                    invalidacao=f"perder {pn:.0f} com fluxo vendedor (defesa falhou)")
     if un and perto(un) and spot <= (mn or un):
-        return dict(codigo="S4", nome="Pullback no Fundo", vies="COMPRADOR", gatilho=f"na última barra− ({un:.0f})", alvo=f"{mp:.0f}" if mp else "VWAP", invalidacao=f"aceitação abaixo de {un:.0f}")
+        return dict(codigo="S4", nome="Pullback no Fundo", vies="COMPRADOR (bounce/reversão)",
+                    gatilho=f"preço na última barra− ({un:.0f}) — exaustão da venda",
+                    alvo=f"{mp:.0f} (ímã acima)" if mp else "VWAP / ímã acima",
+                    invalidacao=f"aceitação abaixo de {un:.0f} (flush continua)")
     if up and perto(up) and mp and mp < spot:
-        return dict(codigo="S3", nome="Pullback no Topo", vies="VENDEDOR", gatilho=f"na última barra+ ({up:.0f})", alvo=f"{mp:.0f}", invalidacao=f"romper {up:.0f}")
+        return dict(codigo="S3", nome="Pullback no Topo", vies="VENDEDOR (recuo ao ímã)",
+                    gatilho=f"preço na última barra+ ({up:.0f}) com ímã em {mp:.0f} abaixo",
+                    alvo=f"{mp:.0f} (ímã abaixo)",
+                    invalidacao=f"romper e sustentar acima de {up:.0f}")
     if flip and spot > flip and mp and mp > spot:
-        return dict(codigo="S1", nome="Rompimento Altista", vies="COMPRADOR", gatilho=f"cruzou flip ({flip:.0f})", alvo=f"{mp:.0f}", invalidacao=f"voltar abaixo de {flip:.0f}")
+        return dict(codigo="S1", nome="Rompimento Altista", vies="COMPRADOR (momentum)",
+                    gatilho=f"preço cruzou o flip ({flip:.0f}) com ímã {mp:.0f} acima aberto",
+                    alvo=f"{mp:.0f} (maior+)",
+                    invalidacao=f"voltar para baixo do flip ({flip:.0f})")
     if pn and spot < pn:
-        return dict(codigo="S2", nome="Rompimento Baixista", vies="VENDEDOR", gatilho=f"perdeu 1ª barra− ({pn:.0f})", alvo=f"{mn:.0f}" if mn else "última barra−", invalidacao=f"recuperar {pn:.0f}")
+        return dict(codigo="S2", nome="Rompimento Baixista", vies="VENDEDOR (short/flush)",
+                    gatilho=f"preço perdeu a 1ª barra− ({pn:.0f}) e entrou em terreno aberto",
+                    alvo=f"{mn:.0f} (maior− abaixo)" if mn else "última barra−",
+                    invalidacao=f"recuperar e aceitar acima de {pn:.0f}")
     if mp and mn and mn <= spot <= mp:
-        return dict(codigo="S5", nome="Consolidação", vies="NEUTRO", gatilho=f"preso entre {mn:.0f} e {mp:.0f}", alvo=f"extremos", invalidacao="romper extremos")
+        return dict(codigo="S5", nome="Consolidação (Pinning)", vies="NEUTRO (disputa/range)",
+                    gatilho=f"preço preso entre o ímã+ ({mp:.0f}) e o ímã− ({mn:.0f})",
+                    alvo=f"extremos ({mn:.0f} a {mp:.0f})",
+                    invalidacao="romper um dos extremos")
     return None
 
+# ----------------------------------------------------------------------------
+# MENTOR DE DISCIPLINA — as 15 regras do operador
+# ----------------------------------------------------------------------------
 DISCIPLINA = [
     "Limite de loss diário atingido = DESLIGA. Amanhã tem mais.",
     "Constância vale mais que ganância.",
@@ -552,7 +657,7 @@ def selo_mercado(t_ny):
         return '<span class="selo selo-pre">PRÉ-MERCADO</span>'
     return '<span class="selo selo-fechado">MERCADO FECHADO</span>'
 
-def regua_fluxo_html(comp, vend):
+def regua_fluxo_html(comp, vend, fluxo_df=None):
     tot = comp + vend
     p_comp = (comp / tot * 100) if tot > 0 else 50.0
     p_vend = 100.0 - p_comp
@@ -563,10 +668,17 @@ def regua_fluxo_html(comp, vend):
         status, classe = "INSTITUIÇÕES VENDENDO AGORA", "vermelho"
     else:
         status, classe = "EM DISPUTA NEUTRA", "amarelo"
+    top_txt = ""
+    if fluxo_df is not None and not fluxo_df.empty and "net" in fluxo_df.columns:
+        i = fluxo_df["net"].abs().idxmax()
+        k_top, v_top = float(fluxo_df.loc[i, "strike"]), float(fluxo_df.loc[i, "net"])
+        cor_top = "verde" if v_top >= 0 else "vermelho"
+        top_txt = (f' · TOP STRIKE <span class="{cor_top}">{k_top:.0f} '
+                   f'({fmt_usd(v_top)})</span>')
     return f"""
     <div class="fluxobar-wrap">
         <div class="fluxobar-top">
-            <span><b>VOLUME IMBALANCE (prêmio agressor)</b></span>
+            <span><b>VOLUME IMBALANCE (prêmio agressor)</b>{top_txt}</span>
             <span class="{classe}"><b>{status}</b></span>
         </div>
         <div class="fluxobar">
@@ -603,14 +715,15 @@ def grafico_barras_quantico(df, col, spot, barras, altura=260, horizontal=False)
     for _, linha in df.iterrows():
         k, v = float(linha["strike"]), float(linha[col])
         if mp is not None and abs(k - mp) < 1e-9 and v > 0:
-            cores.append("#22c55e")
+            cores.append("#22c55e")        # maior barra positiva = verde (ímã)
         elif mn is not None and abs(k - mn) < 1e-9 and v < 0:
-            cores.append("#ef4444")
+            cores.append("#ef4444")        # maior barra negativa = vermelho
         else:
-            cores.append("#3b82f6")
+            cores.append("#3b82f6")        # padrão Quantico: azul
     fig = go.Figure()
     if horizontal:
-        fig.add_trace(go.Bar(y=df["strike"], x=df[col], orientation="h", marker_color=cores))
+        fig.add_trace(go.Bar(y=df["strike"], x=df[col], orientation="h",
+                             marker_color=cores))
         fig.add_hline(y=spot, line_dash="dash", line_color="#94a3b8", line_width=1)
     else:
         fig.add_trace(go.Bar(x=df["strike"], y=df[col], marker_color=cores))
@@ -624,41 +737,140 @@ def grafico_barras_quantico(df, col, spot, barras, altura=260, horizontal=False)
                       yaxis=dict(gridcolor="#1c2733", zerolinecolor="#26313d"))
     return fig
 
-def painel_quantico(titulo, tk, spot, df, col, barras, key, altura=260, faixa=0.03, horizontal=False):
-    st.markdown(cabecalho_painel(titulo, tk, spot, df, col, barras), unsafe_allow_html=True)
+def painel_quantico(titulo, tk, spot, df, col, barras, key,
+                    altura=260, faixa=0.03, horizontal=False):
+    st.markdown(cabecalho_painel(titulo, tk, spot, df, col, barras),
+                unsafe_allow_html=True)
     if df is None or df.empty:
-        st.caption("Sem dados suficientes.")
+        st.caption("Sem dados suficientes neste momento.")
         return
     dfv = df[(df["strike"] >= spot * (1 - faixa)) & (df["strike"] <= spot * (1 + faixa))]
     if dfv.empty:
         dfv = df
-    fig = grafico_barras_quantico(dfv, col, spot, barras, altura=altura, horizontal=horizontal)
-    st.plotly_chart(fig, use_container_width=True, key=key, config={"displayModeBar": False})
+    fig = grafico_barras_quantico(dfv, col, spot, barras,
+                                  altura=altura, horizontal=horizontal)
+    st.plotly_chart(fig, use_container_width=True, key=key,
+                    config={"displayModeBar": False})
+
+def grafico_imbalance(dff, spot, cw, pw, alvo, altura=440):
+    """Volume Imbalance Flow por strike: bear (vermelho, esq.) × bull (verde, dir.)."""
+    if dff is None or dff.empty:
+        return None
+    df = dff[(dff["strike"] >= spot * 0.985) & (dff["strike"] <= spot * 1.015)].copy()
+    if df.empty:
+        df = dff.copy()
+    df["tot"] = df["bull"] + df["bear"]
+    df = df.sort_values("tot", ascending=False).head(14).sort_values("strike")
+    fig = go.Figure()
+    fig.add_trace(go.Bar(y=df["strike"], x=-df["bear"], orientation="h",
+                         marker_color="#ef4444", name="Bearish",
+                         text=[fmt_usd(v) for v in df["bear"]],
+                         textposition="outside", textfont=dict(size=9)))
+    fig.add_trace(go.Bar(y=df["strike"], x=df["bull"], orientation="h",
+                         marker_color="#22c55e", name="Bullish",
+                         text=[fmt_usd(v) for v in df["bull"]],
+                         textposition="outside", textfont=dict(size=9)))
+    fig.add_hline(y=spot, line_dash="dot", line_color="#e6edf3", line_width=1)
+    if alvo:
+        fig.add_hline(y=alvo, line_dash="dash", line_color="#3b82f6", line_width=1)
+    if cw:
+        fig.add_hline(y=cw, line_color="#a78bfa", line_width=1)
+    if pw:
+        fig.add_hline(y=pw, line_color="#a78bfa", line_width=1)
+    fig.update_layout(template="plotly_dark", barmode="relative",
+                      paper_bgcolor="#10161d", plot_bgcolor="#10161d",
+                      margin=dict(l=6, r=6, t=6, b=6), height=altura,
+                      showlegend=False,
+                      xaxis=dict(gridcolor="#1c2733", zerolinecolor="#26313d"),
+                      yaxis=dict(gridcolor="#1c2733", dtick=1))
+    return fig
+
+def grafico_niveis(hist, spot, cw, pw, flip, b_gex, vwap_val, tk, altura=560):
+    """Gráfico de Níveis: candlestick 1min em tempo real (Tradier) com as linhas
+    do dealer sobrepostas. Resolve a limitação do TradingView gratuito (atraso de
+    15 min e ausência dos níveis de opções). NÃO é liquidez passiva do DOM de
+    futuros (isso é a Fase 7 e exige feed Databento/Rithmic) — são os níveis de
+    Delta-Hedging projetados sobre o preço, que é o que dá para fazer sem custo."""
+    if hist is None or hist.empty or "Open" not in hist.columns:
+        return None
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(
+        x=hist.index, open=hist["Open"], high=hist["High"],
+        low=hist["Low"], close=hist["Close"], name=tk,
+        increasing_line_color="#22c55e", decreasing_line_color="#ef4444"))
+    niveis = [
+        (cw, "#a78bfa", "WALL (call)"),
+        (pw, "#a78bfa", "WALL (put)"),
+        (b_gex.get("maior_pos"), "#3b82f6", "TARGET (ímã+)"),
+        (b_gex.get("primeira_pos"), "#22c55e", "1ª POSITIVA"),
+        (b_gex.get("primeira_neg"), "#ef4444", "1ª NEGATIVA"),
+        (b_gex.get("maior_neg"), "#f97316", "SETUP 6 / defesa"),
+        (flip, "#eab308", "FLIP"),
+        (vwap_val, "#fbbf24", "VWAP"),
+    ]
+    vistos = set()
+    for nivel, cor, rotulo in niveis:
+        if nivel is None or round(nivel, 2) in vistos:
+            continue
+        vistos.add(round(nivel, 2))
+        fig.add_hline(y=nivel, line_color=cor, line_width=1,
+                      line_dash="dot" if rotulo == "VWAP" else "solid",
+                      annotation_text=f"{rotulo} {nivel:.2f}",
+                      annotation_position="right",
+                      annotation_font_size=9, annotation_font_color=cor)
+    fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False,
+                      paper_bgcolor="#0a0d12", plot_bgcolor="#0a0d12",
+                      margin=dict(l=6, r=90, t=6, b=6), height=altura,
+                      showlegend=False,
+                      xaxis=dict(gridcolor="#141c26"),
+                      yaxis=dict(gridcolor="#141c26", side="right"))
+    return fig
+
 
 def grafico_vwap(hist, modo_bandas, bandas_pct, altura=330):
     idx, vwap_ser, sigma_ser = calcular_vwap(hist)
     h = hist.loc[idx]
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=idx, y=h["Close"], name="Preço", line=dict(color="#e6edf3", width=1.6)))
-    fig.add_trace(go.Scatter(x=idx, y=vwap_ser, name="VWAP", line=dict(color="#fbbf24", width=1.4)))
+    fig.add_trace(go.Scatter(x=idx, y=h["Close"], name="Preço",
+                             line=dict(color="#e6edf3", width=1.6)))
+    fig.add_trace(go.Scatter(x=idx, y=vwap_ser, name="VWAP",
+                             line=dict(color="#fbbf24", width=1.4)))
     if modo_bandas.startswith("Desvio"):
         for mult in (1, 2, 3):
             for sinal in (1, -1):
-                fig.add_trace(go.Scatter(x=idx, y=vwap_ser + sinal * mult * sigma_ser,
-                                         name=f"{'+' if sinal > 0 else '−'}{mult}σ",
-                                         line=dict(color="#3b82f6", width=0.8, dash="dot"),
-                                         opacity=max(0.25, 0.8 - 0.22 * mult), showlegend=False))
+                fig.add_trace(go.Scatter(
+                    x=idx, y=vwap_ser + sinal * mult * sigma_ser,
+                    name=f"{'+' if sinal > 0 else '−'}{mult}σ",
+                    line=dict(color="#3b82f6", width=0.8, dash="dot"),
+                    opacity=max(0.25, 0.8 - 0.22 * mult), showlegend=False))
     else:
         for p in bandas_pct:
             for sinal in (1, -1):
-                fig.add_trace(go.Scatter(x=idx, y=vwap_ser * (1 + sinal * p / 100.0),
-                                         name=f"{'+' if sinal > 0 else '−'}{p}%",
-                                         line=dict(color="#3b82f6", width=0.8, dash="dot"),
-                                         opacity=0.5, showlegend=False))
-    fig.update_layout(template="plotly_dark", paper_bgcolor="#10161d", plot_bgcolor="#10161d",
-                      margin=dict(l=6, r=6, t=8, b=6), height=altura, legend=dict(orientation="h", y=1.08),
-                      xaxis=dict(gridcolor="#1c2733"), yaxis=dict(gridcolor="#1c2733"))
+                fig.add_trace(go.Scatter(
+                    x=idx, y=vwap_ser * (1 + sinal * p / 100.0),
+                    name=f"{'+' if sinal > 0 else '−'}{p}%",
+                    line=dict(color="#3b82f6", width=0.8, dash="dot"),
+                    opacity=0.5, showlegend=False))
+    fig.update_layout(template="plotly_dark",
+                      paper_bgcolor="#10161d", plot_bgcolor="#10161d",
+                      margin=dict(l=6, r=6, t=8, b=6), height=altura,
+                      legend=dict(orientation="h", y=1.08),
+                      xaxis=dict(gridcolor="#1c2733"),
+                      yaxis=dict(gridcolor="#1c2733"))
     return fig
+
+def tabela_barras_md(b):
+    def f(v):
+        return f"{v:.2f}" if v is not None else "—"
+    return ("| Barra | Positiva (defesa passiva) | Negativa (defesa ativa) |\n"
+            "|---|---|---|\n"
+            f"| **Primeira** (linha de defesa) | {f(b.get('primeira_pos'))} | {f(b.get('primeira_neg'))} |\n"
+            f"| **Maior** (ímã / alvo) | {f(b.get('maior_pos'))} | {f(b.get('maior_neg'))} |\n"
+            f"| **Última** (exaustão) | {f(b.get('ultima_pos'))} | {f(b.get('ultima_neg'))} |")
+
+def cartao_html(rotulo, valor, sub=""):
+    sub_html = f'<div class="sub">{sub}</div>' if sub else ""
+    return f'<div class="cartao"><div class="rotulo">{rotulo}</div><div class="valor">{valor}</div>{sub_html}</div>'
 
 # ----------------------------------------------------------------------------
 # EXECUÇÃO PRINCIPAL
@@ -674,6 +886,7 @@ origem_r = "^IRX automático" if (USAR_R_AUTO and r_global is not None) else "ma
 if r_global is None:
     r_global = TAXA_MANUAL
 
+# --- Coleta e derivação por ativo -------------------------------------------
 dados_ativos, falhas = {}, {}
 for tk in tickers_para_rodar:
     bruto = buscar_dados(tk)
@@ -683,15 +896,16 @@ for tk in tickers_para_rodar:
     spot, hist = bruto["spot"], bruto["hist"]
     calls, puts, venc = bruto["calls"], bruto["puts"], bruto["venc"]
     if spot is None or venc is None or calls is None or calls.empty:
-        falhas[tk] = " · ".join(bruto["erros"]) if bruto["erros"] else "cadeia indisponível"
+        falhas[tk] = " · ".join(bruto["erros"]) if bruto["erros"] else \
+            "cadeia de opções indisponível no momento"
         continue
 
     por_strike, cw, pw, flip, dominio, v_hoje = calcular_gex(calls, puts, spot, venc, r_global)
     b_gex = identificar_barras_chave(por_strike, spot, "gex")
     tp_df = calcular_time_pressure(calls, puts, spot, venc, r_global)
     b_tp = identificar_barras_chave(tp_df, spot, "tp")
-    comp, vend, fluxo_df = calcular_fluxo_institucional(calls, puts)
-    b_fluxo = identificar_barras_chave(fluxo_df, spot, "net")
+    comp, vend, fluxo_df = calcular_fluxo_institucional(calls, puts, spot)
+    b_fluxo = identificar_barras_chave(fluxo_df, spot, "notional")
 
     vwap_val = sigma_val = None
     if hist is not None and not hist.empty:
@@ -708,98 +922,280 @@ for tk in tickers_para_rodar:
                             vend=vend, fluxo_df=fluxo_df, b_fluxo=b_fluxo,
                             vwap=vwap_val, sigma=sigma_val, setup=setup)
 
-# --- Cabeçalho ---
-fonte_geral = "● Tempo real Tradier" if dados_ativos and all(d["fonte"].startswith("Tradier") for d in dados_ativos.values()) else "● Fallback yfinance (~15 min)"
+# --- Cabeçalho ---------------------------------------------------------------
+fonte_geral = "● Tempo real Tradier" if dados_ativos and all(
+    d["fonte"].startswith("Tradier") for d in dados_ativos.values()) else "● Fallback yfinance (~15 min)"
 cor_fonte = "#22c55e" if fonte_geral.startswith("● Tempo") else "#fbbf24"
 st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style='font-size:0.8rem;color:#6b7280;'>v3.6</small></span>
-        <span class="pq-sub">Terminal Quantico · Estudo</span>
+        <small style="font-size:0.8rem;color:#6b7280;">v3.6</small></span>
+        <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
         {selo_mercado(agora_ny)}<br>
-        <b>NY:</b> {agora_ny.strftime('%H:%M:%S')} · <b>BR:</b> {agora_br.strftime('%H:%M')} · r: {r_global*100:.2f}%<br>
+        <b>NY:</b> {agora_ny.strftime('%H:%M:%S')} · <b>BR:</b> {agora_br.strftime('%H:%M')} ·
+        r: {r_global*100:.2f}% ({origem_r})<br>
         <span style='color:{cor_fonte}'>{fonte_geral}</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
 
+regra_dia = DISCIPLINA[agora_ny.timetuple().tm_yday % len(DISCIPLINA)]
+st.markdown(f'<div class="disciplina">🧭 <b>Disciplina do dia:</b> {regra_dia}</div>',
+            unsafe_allow_html=True)
+with st.expander("Ver as 15 regras do operador"):
+    for i, regra in enumerate(DISCIPLINA, 1):
+        st.markdown(f"**{i}.** {regra}")
+
+# --- Falhas de dados (sem travar o app) --------------------------------------
 if falhas:
     lista = "<br>".join(f"<b>{k}</b>: {v}" for k, v in falhas.items())
-    st.markdown(f'<div class="cartao alerta-vermelho"><div class="rotulo">Aviso</div><div class="sub">{lista}</div></div>', unsafe_allow_html=True)
+    st.markdown(f"""
+    <div class="cartao alerta-vermelho">
+        <div class="rotulo">Dados indisponíveis</div>
+        <div class="sub">{lista}<br><br>
+        Checklist: (1) TRADIER_TOKEN salvo em Settings → Secrets do Streamlit Cloud;
+        (2) chave de PRODUÇÃO regenerada (a antiga vazou no repositório público);
+        (3) conta Tradier aprovada, com depósito e market data agreements aceitos
+        como <i>non-professional</i>; (4) nunca usar a chave Sandbox (15 min de atraso).</div>
+    </div>""", unsafe_allow_html=True)
 
 if not dados_ativos:
     st.stop()
 
-# ----------------------------------------------------------------------------
-# MODO TERMINAL (LAYOUT QUANTICO)
-# ----------------------------------------------------------------------------
-if MODO_VISAO == "SPY + QQQ lado a lado" and "SPY" in dados_ativos and "QQQ" in dados_ativos:
-    col_esq, col_dir = st.columns([0.38, 0.62], gap="small")
+# --- Veto SPY×QQQ (1.5) -------------------------------------------------------
+if "SPY" in dados_ativos and "QQQ" in dados_ativos:
+    s_spy, s_qqq = dados_ativos["SPY"]["setup"], dados_ativos["QQQ"]["setup"]
+    if s_qqq and s_qqq["codigo"] == "S2" and (not s_spy or s_spy["codigo"] != "S2"):
+        st.markdown('<div class="setup-linha alerta-vermelho">⚠️ <b>VETO ATIVO (regra SPY×QQQ):</b> '
+                    'o QQQ armou Rompimento Baixista (S2), mas o SPY não confirmou. '
+                    'SPY é a PERMISSÃO — sem ele, operação proibida.</div>',
+                    unsafe_allow_html=True)
 
-    with col_esq:
-        c_tv_qqq, c_tv_spy = st.columns(2, gap="small")
-        with c_tv_qqq:
-            if MOSTRAR_TV:
-                components.html('<iframe src="https://s.tradingview.com/widgetembed/?symbol=NASDAQ%3AQQQ&interval=5&theme=dark&style=1&locale=br&hide_top_toolbar=1&withdateranges=0" style="width:100%;height:640px;border:0;border-radius:8px;"></iframe>', height=650)
-        with c_tv_spy:
-            if MOSTRAR_TV:
-                components.html('<iframe src="https://s.tradingview.com/widgetembed/?symbol=AMEX%3ASPY&interval=5&theme=dark&style=1&locale=br&hide_top_toolbar=1&withdateranges=0" style="width:100%;height:640px;border:0;border-radius:8px;"></iframe>', height=650)
+# --- Abas ---------------------------------------------------------------------
+nomes_abas = ["📊 Visão Geral", "⚡ Delta-Hedging", "🌊 Fluxo",
+              "⏳ Time Pressure", "🎯 Setups", "🔀 SPY×QQQ", "📉 Níveis"]
+if MOSTRAR_TV:
+    nomes_abas.append("📈 Gráfico TV")
+abas = st.tabs(nomes_abas)
+ativos_ok = [t for t in tickers_para_rodar if t in dados_ativos]
 
-    with col_dir:
-        # --- Linha Superior: QQQ ---
-        d_q = dados_ativos["QQQ"]
-        cq1, cq2, cq3 = st.columns(3, gap="small")
-        with cq1:
-            painel_quantico("Delta Hedging Q", "QQQ", d_q["spot"], d_q["por_strike"], "gex", d_q["b_gex"], key="dh_q", altura=280, faixa=0.04)
-        with cq2:
-            painel_quantico("Institutional Flow Q", "QQQ", d_q["spot"], d_q["fluxo_df"], "net", d_q["b_fluxo"], key="if_q", altura=280, faixa=0.03)
-        with cq3:
-            painel_quantico("Time Pressure Q", "QQQ", d_q["spot"], d_q["tp_df"], "tp", d_q["b_tp"], key="tp_q", altura=280, faixa=0.04)
+# ============================== ABA 1 · VISÃO GERAL ============================
+with abas[0]:
+    for tk in ativos_ok:
+        d = dados_ativos[tk]
+        var = ""
+        if d["prev"]:
+            pct = (d["spot"] / d["prev"] - 1) * 100
+            cor = "verde" if pct >= 0 else "vermelho"
+            var = f' <span class="{cor}">{pct:+.2f}%</span>'
+        st.markdown(f"#### {tk} — ${d['spot']:.2f}{var} &nbsp;"
+                    f"<span style='font-size:0.72rem;color:#8b98a5'>venc. {d['venc']} · "
+                    f"{d['fonte']}</span>", unsafe_allow_html=True)
+        if d["dte0"]:
+            st.caption("⚠️ Vencimento HOJE (0DTE): gamma extremo — barras mudam rápido e "
+                       "picos de Time Pressure sinalizam pullback.")
 
-        st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+        st.markdown(regua_fluxo_html(d["comp"], d["vend"], d["fluxo_df"]), unsafe_allow_html=True)
+        s = d["setup"]
+        if s:
+            st.markdown(f'<div class="setup-linha">⚙️ <b>Setup ativo:</b> '
+                        f'<span class="amarelo">{s["codigo"]} — {s["nome"]}</span> · '
+                        f'Viés: <b>{s["vies"]}</b> · Alvo: {s["alvo"]}</div>',
+                        unsafe_allow_html=True)
 
-        # --- Linha Inferior: SPY ---
-        d_s = dados_ativos["SPY"]
-        cs1, cs2, cs3 = st.columns(3, gap="small")
-        with cs1:
-            painel_quantico("Delta Hedging Q", "SPY", d_s["spot"], d_s["por_strike"], "gex", d_s["b_gex"], key="dh_s", altura=280, faixa=0.04)
-        with cs2:
-            painel_quantico("Institutional Flow Q", "SPY", d_s["spot"], d_s["fluxo_df"], "net", d_s["b_fluxo"], key="if_s", altura=280, faixa=0.03)
-        with cs3:
-            painel_quantico("Time Pressure Q", "SPY", d_s["spot"], d_s["tp_df"], "tp", d_s["b_tp"], key="tp_s", altura=280, faixa=0.04)
+        trio = [("Delta Hedging Q", d["por_strike"], "gex", d["b_gex"]),
+                ("Institutional Flow Q", d["fluxo_df"], "notional", d["b_fluxo"]),
+                ("Time Pressure Q", d["tp_df"], "tp", d["b_tp"])]
+        if MODO_CELULAR:
+            for titulo, df_, col_, b_ in trio:
+                painel_quantico(titulo, tk, d["spot"], df_, col_, b_,
+                                key=f"vg_{tk}_{col_}", altura=380,
+                                faixa=0.03, horizontal=True)
+        else:
+            colunas = st.columns(3)
+            for coluna, (titulo, df_, col_, b_) in zip(colunas, trio):
+                with coluna:
+                    painel_quantico(titulo, tk, d["spot"], df_, col_, b_,
+                                    key=f"vg_{tk}_{col_}", altura=250, faixa=0.03)
 
-    # --- Análises Complementares Ocultas ---
-    st.markdown("---")
-    with st.expander("🛠️ Visão Geral, Análise de Setups e VWAP"):
-        for tk in ["QQQ", "SPY"]:
-            d = dados_ativos[tk]
-            st.markdown(f"#### {tk} · Spot: ${d['spot']:.2f}")
-            st.markdown(regua_fluxo_html(d["comp"], d["vend"]), unsafe_allow_html=True)
-            if MOSTRAR_VWAP and d["hist"] is not None and not d["hist"].empty:
-                st.plotly_chart(grafico_vwap(d["hist"], MODO_BANDAS, BANDAS_VWAP.get(tk, [])), use_container_width=True, key=f"vwap_{tk}")
-        
-        st.markdown("#### Leitura Cruzada SPY×QQQ")
+        with st.expander("Cartões estratégicos e conversão para futuros"):
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.markdown(cartao_html("Spot", fx(d["spot"])), unsafe_allow_html=True)
+            c2.markdown(cartao_html("VWAP", fx(d["vwap"])), unsafe_allow_html=True)
+            c3.markdown(cartao_html("Call Wall", fx(d["cw"], nd=1)), unsafe_allow_html=True)
+            c4.markdown(cartao_html("Put Wall", fx(d["pw"], nd=1)), unsafe_allow_html=True)
+            c5.markdown(cartao_html("Gamma Flip", fx(d["flip"], nd=1),
+                                    "domínio " + (d["dominio"] or "misto")),
+                        unsafe_allow_html=True)
+            if MOSTRAR_FUTUROS:
+                n_fut, p_fut, r_fut = razao_futuro(tk, d["spot"])
+                if r_fut:
+                    linhas = [("Spot", d["spot"]), ("Call Wall", d["cw"]),
+                              ("Put Wall", d["pw"]), ("Gamma Flip", d["flip"]),
+                              ("Ímã (maior+)", d["b_gex"].get("maior_pos")),
+                              ("1ª barra−", d["b_gex"].get("primeira_neg"))]
+                    md = (f"| Nível ({tk}) | ETF | Futuro ({n_fut} @ {p_fut:.1f}) |\n"
+                          "|---|---|---|\n")
+                    for nome, v in linhas:
+                        if v:
+                            md += f"| {nome} | ${v:.2f} | **{v * r_fut:.1f}** |\n"
+                    st.markdown(md)
+                else:
+                    st.caption("Razão do futuro indisponível no momento.")
+
+        if MOSTRAR_VWAP and d["hist"] is not None and not d["hist"].empty:
+            with st.expander(f"Preço × VWAP ({tk})"):
+                figv = grafico_vwap(d["hist"], MODO_BANDAS, BANDAS_VWAP.get(tk, []))
+                st.plotly_chart(figv, use_container_width=True, key=f"vwap_{tk}",
+                                config={"displayModeBar": False})
+        st.markdown("---")
+
+# ============================== ABA 2 · DELTA-HEDGING ==========================
+with abas[1]:
+    st.caption("Barras de gamma = defesa dos market makers. Positivas = guard-rails "
+               "(estabiliza); negativas = gasolina no fogo (acelera). Escala: "
+               "dollar-gamma pleno (Γ·OI·100·S²), escala em bilhões como no terminal de referência.")
+    for tk in ativos_ok:
+        d = dados_ativos[tk]
+        painel_quantico("Delta Hedging Q", tk, d["spot"], d["por_strike"], "gex",
+                        d["b_gex"], key=f"dh_{tk}", altura=420, faixa=0.05,
+                        horizontal=MODO_CELULAR)
+        st.caption(f"Gamma flip: {fx(d['flip'], nd=1)} · Call Wall: {fx(d['cw'], nd=1)} · "
+                   f"Put Wall: {fx(d['pw'], nd=1)}")
+        st.markdown(tabela_barras_md(d["b_gex"]))
+        st.markdown("---")
+
+# ============================== ABA 3 · FLUXO ==================================
+with abas[2]:
+    st.caption("Volume Imbalance Flow: prêmio agressor por strike. Verde (direita) = "
+               "calls compradas / puts vendidas; vermelho (esquerda) = puts compradas / "
+               "calls vendidas. Linhas: branca = spot · azul = ímã (maior+) · roxa = muros.")
+    for tk in ativos_ok:
+        d = dados_ativos[tk]
+        st.markdown(regua_fluxo_html(d["comp"], d["vend"], d["fluxo_df"]), unsafe_allow_html=True)
+        fig_i = grafico_imbalance(d["fluxo_df"], d["spot"], d["cw"], d["pw"],
+                                  d["b_gex"].get("maior_pos"))
+        if fig_i:
+            st.markdown(cabecalho_painel("Volume Imbalance Flow", tk, d["spot"],
+                                         d["fluxo_df"], "net", d["b_fluxo"]),
+                        unsafe_allow_html=True)
+            st.plotly_chart(fig_i, use_container_width=True, key=f"imb_{tk}",
+                            config={"displayModeBar": False})
+        else:
+            st.caption(f"{tk}: sem fluxo classificável agora (mercado fechado ou "
+                       "volume zerado).")
+        painel_quantico("Institutional Flow Q (notional por strike)", tk, d["spot"],
+                        d["fluxo_df"], "notional", d["b_fluxo"], key=f"flx_{tk}",
+                        altura=300, faixa=0.03, horizontal=MODO_CELULAR)
+        st.markdown("---")
+
+# ============================== ABA 4 · TIME PRESSURE ==========================
+with abas[3]:
+    st.caption("Time Pressure (item 1.8, v1): decaimento do delta (charm) forçando o "
+               "hedge dos dealers. Positivo = decadência magnetiza para CIMA; negativo = "
+               "para BAIXO; picos = alívio → sinal de pullback. Semântica em validação "
+               "ao vivo (item 1.9) — tratar como leitura de apoio, não gatilho isolado.")
+    for tk in ativos_ok:
+        d = dados_ativos[tk]
+        painel_quantico("Time Pressure Q", tk, d["spot"], d["tp_df"], "tp",
+                        d["b_tp"], key=f"tp_{tk}", altura=380, faixa=0.04,
+                        horizontal=MODO_CELULAR)
+        st.markdown(tabela_barras_md(d["b_tp"]))
+        st.markdown("---")
+
+# ============================== ABA 5 · SETUPS =================================
+with abas[4]:
+    st.caption("S6 é o mais assertivo · S2 é o mais perigoso e EXIGE confirmação do "
+               "SPY · S5 se evita. PrumoQuant Bell (2.3): em construção — sinal "
+               "congelado às 9h29:59 NY e avaliado até 10h00 com MAE/MFE.")
+    for tk in ativos_ok:
+        d = dados_ativos[tk]
+        s = d["setup"]
+        if s:
+            st.markdown(f"""<div class="terminal"><span class="titulo">{tk} · {s['codigo']} — {s['nome']}</span>
+Viés ........: <span class="destaque">{s['vies']}</span>
+Gatilho .....: {s['gatilho']}
+Alvo ........: {s['alvo']}
+Invalidação .: <span class="neg">{s['invalidacao']}</span>
+<span class="aviso">Cenário condicional de ESTUDO — a decisão e o risco são do operador.</span></div>""",
+                        unsafe_allow_html=True)
+        else:
+            st.markdown(f"""<div class="terminal"><span class="titulo">{tk}</span>
+Nenhum setup ativo neste momento — aguardar o preço interagir com as barras-chave.
+<span class="aviso">Ficar de fora também é posição.</span></div>""",
+                        unsafe_allow_html=True)
+        st.markdown(f"**6 barras-chave do Delta-Hedging ({tk}):**")
+        st.markdown(tabela_barras_md(d["b_gex"]))
+        st.markdown("---")
+
+# ============================== ABA 6 · SPY×QQQ ================================
+with abas[5]:
+    if "SPY" in dados_ativos and "QQQ" in dados_ativos:
         s_spy, s_qqq = dados_ativos["SPY"]["setup"], dados_ativos["QQQ"]["setup"]
         cod_spy = s_spy["codigo"] if s_spy else "—"
         cod_qqq = s_qqq["codigo"] if s_qqq else "—"
-        st.write(f"**SPY:** `{cod_spy}` · **QQQ:** `{cod_qqq}`")
+        if s_qqq and cod_qqq == "S2" and cod_spy == "S2":
+            leitura = ("🔻 **S2 CONFIRMADO nos dois ativos** — rompimento baixista "
+                       "validado. Ainda assim, exigir margem de 0,15% além do nível "
+                       "(iminente × confirmado).")
+        elif s_qqq and cod_qqq == "S2":
+            leitura = ("⛔ **VETO** — QQQ baixista sem confirmação do SPY. "
+                       "SPY é a permissão; QQQ é só o gatilho.")
+        elif s_spy and s_qqq and "COMPRADOR" in s_spy["vies"] and "COMPRADOR" in s_qqq["vies"]:
+            leitura = "✅ **Permissão altista** — SPY e QQQ alinhados no viés comprador."
+        else:
+            leitura = "🟡 **Sinais mistos** — cautela; aguardar alinhamento SPY×QQQ."
+        st.markdown(f"**Leitura cruzada agora:** SPY = `{cod_spy}` · QQQ = `{cod_qqq}`")
+        st.markdown(leitura)
+        st.markdown("""
+| Cenário | QQQ | SPY | Decisão |
+|---|---|---|---|
+| 1 | S2 (baixista) | S2 (baixista) | Rompimento confirmado — operável com margem 0,15% |
+| 2 | S2 (baixista) | qualquer outro | **VETO** — proibido operar QQQ contra o SPY |
+| 3 | viés comprador | viés comprador | Permissão altista — QQQ como instrumento de rompimento |
+| 4 | sinais mistos | sinais mistos | Cautela / ficar de fora |
+""")
+        st.caption("Regra de ouro: SPY = liquidez/permissão (muros mais fortes, ativo de "
+                   "reversão); QQQ = gatilho/rompimento. Nunca operar QQQ contra o SPY.")
+    else:
+        st.info("Ative o modo **SPY + QQQ lado a lado** na barra lateral para a "
+                "leitura cruzada e o veto automático.")
 
-else:
-    # Fallback para "Um ativo"
-    tk = TICKER_UNICO
-    d = dados_ativos[tk]
-    if MOSTRAR_TV:
+# ============================== ABA 7 · NÍVEIS ================================
+with abas[6]:
+    st.caption("Candlestick 1 min em tempo real (Tradier) com os níveis do dealer "
+               "sobrepostos: muros (roxo), ímã/alvo (azul), 1ª positiva (verde), 1ª "
+               "negativa (vermelho), defesa do Setup 6 (laranja), flip (amarelo) e VWAP. "
+               "Substitui o TradingView gratuito, que é atrasado ~15 min e não traz os "
+               "níveis de opções. Obs.: a zona de liquidez passiva do DOM de futuros "
+               "(as faixas horizontais do terminal deles) é a Fase 7 — exige feed pago "
+               "Databento/Rithmic e não sai do TradingView.")
+    for tk in ativos_ok:
+        d = dados_ativos[tk]
+        fig_n = grafico_niveis(d["hist"], d["spot"], d["cw"], d["pw"], d["flip"],
+                               d["b_gex"], d["vwap"], tk)
+        if fig_n:
+            st.markdown(f"**{tk} — níveis do dealer ao vivo**")
+            st.plotly_chart(fig_n, use_container_width=True, key=f"niv_{tk}",
+                            config={"displayModeBar": False})
+        else:
+            st.caption(f"{tk}: candlestick indisponível (fora do pregão ou fallback "
+                       "yfinance sem OHLC intraday).")
+        st.markdown("---")
+
+# ============================== ABA 8 · GRÁFICO TV =============================
+if MOSTRAR_TV:
+    with abas[7]:
         simbolos_tv = {"SPY": "AMEX%3ASPY", "QQQ": "NASDAQ%3AQQQ"}
-        components.html(f'<iframe src="https://s.tradingview.com/widgetembed/?symbol={simbolos_tv[tk]}&interval=5&theme=dark&style=1&locale=br&hide_top_toolbar=1&withdateranges=0" style="width:100%;height:400px;border:0;border-radius:8px;"></iframe>', height=410)
-    
-    st.markdown(regua_fluxo_html(d["comp"], d["vend"]), unsafe_allow_html=True)
-    c1, c2, c3 = st.columns(3)
-    with c1: painel_quantico("Delta Hedging Q", tk, d["spot"], d["por_strike"], "gex", d["b_gex"], key="dh1", altura=300, faixa=0.04, horizontal=MODO_CELULAR)
-    with c2: painel_quantico("Institutional Flow Q", tk, d["spot"], d["fluxo_df"], "net", d["b_fluxo"], key="if1", altura=300, faixa=0.03, horizontal=MODO_CELULAR)
-    with c3: painel_quantico("Time Pressure Q", tk, d["spot"], d["tp_df"], "tp", d["b_tp"], key="tp1", altura=300, faixa=0.04, horizontal=MODO_CELULAR)
-    
-    if MOSTRAR_VWAP and d["hist"] is not None and not d["hist"].empty:
-        st.plotly_chart(grafico_vwap(d["hist"], MODO_BANDAS, BANDAS_VWAP.get(tk, [])), use_container_width=True, key=f"vwap_1_{tk}")
+        for tk in ativos_ok:
+            url = (f"https://s.tradingview.com/widgetembed/?symbol={simbolos_tv[tk]}"
+                   "&interval=5&theme=dark&style=1&locale=br&hide_top_toolbar=0"
+                   "&withdateranges=1")
+            components.html(f'<iframe src="{url}" style="width:100%;height:600px;'
+                            'border:0;border-radius:10px;"></iframe>', height=610)
+
+st.caption("PrumoQuant · ferramenta de ESTUDO — não é recomendação de investimento. "
+           "Painel somente leitura: nenhum endpoint de ordem está implementado (trava §2.1).")
