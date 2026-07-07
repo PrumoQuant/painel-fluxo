@@ -1,8 +1,13 @@
 # ============================================================================
-# PAINEL DE FLUXO DE OPÇÕES — VERSÃO 3.6 "CALIBRAÇÃO QUANTICO" (ESTUDO)
+# PAINEL DE FLUXO DE OPÇÕES — VERSÃO 3.6 "CALIBRAÇÃO QUANTICO v2" (ESTUDO)
 # PrumoQuant · https://prumoquant.streamlit.app
 # ============================================================================
 # NOVIDADES v3.6 — calibração com dados pareados Quantico (07/07/2026):
+#  D5. MULTI-VENCIMENTO: GEX e Time Pressure somam os 4 vencimentos mais
+#      próximos (o hedge do dealer existe em todas as datas abertas, não só
+#      no 0DTE), cada opção com seu T e peso 1/(1+dias/5) — 0DTE dominante.
+#      É o que fecha a divergência de magnitude vs terminal Quantico e deixa
+#      os muros mais estáveis/confiáveis para operar.
 #  D1. ESCALA GEX corrigida: Γ·OI·100·S² pleno (removido o fator 1%) →
 #      magnitudes em B, mesma ordem do terminal de referência.
 #  D2. INSTITUTIONAL FLOW por strike agora em NOTIONAL do subjacente
@@ -347,9 +352,14 @@ def buscar_dados(ticker):
             spot = float(hist["Close"].iloc[-1])
             fonte = "yfinance · ~15 min"
 
-    # 3) Cadeia de opções (vencimento mais próximo)
+    # 3) Cadeia de opções — MULTI-VENCIMENTO (D5): soma os próximos vencimentos
+    #    para casar a magnitude do dealer com a Quantico (o hedge existe em todas
+    #    as datas abertas, não só no 0DTE). Guardamos o venc de cada opção para
+    #    calcular o T certo de cada uma. NVENC controla quantos vencimentos entram.
+    NVENC = 4
     calls = puts = None
-    venc = None
+    venc = None          # vencimento mais próximo (0DTE), usado para 0DTE flag e rótulo
+    vencs = []
     j, e = tradier_get("/markets/options/expirations", {"symbol": ticker})
     if e:
         erros.append(f"expirations: {e}")
@@ -357,36 +367,46 @@ def buscar_dados(ticker):
         exp = (j.get("expirations") or {})
         datas = exp.get("date") if isinstance(exp, dict) else None
         if datas:
-            venc = datas[0] if isinstance(datas, list) else datas
-    if venc:
+            if isinstance(datas, str):
+                datas = [datas]
+            vencs = list(datas)[:NVENC]
+            venc = vencs[0] if vencs else None
+
+    frames = []
+    for vc in vencs:
         j, e = tradier_get("/markets/options/chains",
-                           {"symbol": ticker, "expiration": venc, "greeks": "true"})
+                           {"symbol": ticker, "expiration": vc, "greeks": "true"})
         if e:
-            erros.append(f"chains: {e}")
+            erros.append(f"chains {vc}: {e}")
+            continue
+        ops = ((j.get("options") or {}) or {}).get("option", [])
+        if isinstance(ops, dict):
+            ops = [ops]
+        dfc = pd.DataFrame(ops)
+        if dfc.empty:
+            continue
+        dfc = dfc.rename(columns={"open_interest": "openInterest", "last": "lastPrice"})
+        dfc["venc_opt"] = vc          # ← vencimento desta opção (para o T individual)
+        if "greeks" in dfc.columns:
+            def _iv(g):
+                if isinstance(g, dict):
+                    for chave in ("mid_iv", "smv_vol", "ask_iv", "bid_iv"):
+                        v = num(g.get(chave))
+                        if v > 0:
+                            return v
+                return 0.0
+            dfc["impliedVolatility"] = dfc["greeks"].apply(_iv)
         else:
-            ops = ((j.get("options") or {}) or {}).get("option", [])
-            if isinstance(ops, dict):
-                ops = [ops]
-            dfc = pd.DataFrame(ops)
-            if not dfc.empty:
-                dfc = dfc.rename(columns={"open_interest": "openInterest",
-                                          "last": "lastPrice"})
-                if "greeks" in dfc.columns:
-                    def _iv(g):
-                        if isinstance(g, dict):
-                            for chave in ("mid_iv", "smv_vol", "ask_iv", "bid_iv"):
-                                v = num(g.get(chave))
-                                if v > 0:
-                                    return v
-                        return 0.0
-                    dfc["impliedVolatility"] = dfc["greeks"].apply(_iv)
-                else:
-                    dfc["impliedVolatility"] = 0.0
-                calls = dfc[dfc["option_type"] == "call"].copy()
-                puts = dfc[dfc["option_type"] == "put"].copy()
+            dfc["impliedVolatility"] = 0.0
+        frames.append(dfc)
+
+    if frames:
+        todas = pd.concat(frames, ignore_index=True)
+        calls = todas[todas["option_type"] == "call"].copy()
+        puts = todas[todas["option_type"] == "put"].copy()
 
     return {"spot": spot, "prev": prev, "hist": hist, "calls": calls,
-            "puts": puts, "venc": venc, "fonte": fonte, "erros": erros}
+            "puts": puts, "venc": venc, "vencs": vencs, "fonte": fonte, "erros": erros}
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def taxa_juros_automatica():
@@ -456,21 +476,27 @@ def identificar_barras_chave(df, spot, col="gex", faixa=0.03):
     return b
 
 def calcular_gex(calls, puts, spot, venc_str, r):
-    """GEX por strike — Descoberta 1: dollar-gamma PLENO (Γ·OI·100·S²),
-    escala em bilhões, mesma ordem de grandeza do terminal Quantico."""
-    dias = max((pd.Timestamp(venc_str) - pd.Timestamp.now()).days, 0)
-    T = max(dias / 252, 0.5 / 252)
+    """GEX por strike — dollar-gamma PLENO (Γ·OI·100·S²) somado sobre MÚLTIPLOS
+    vencimentos (D5). Cada opção usa o T do seu próprio vencimento (venc_opt) e
+    um peso que decai com a distância da data — o 0DTE continua dominante, mas os
+    vencimentos seguintes engrossam os muros até a magnitude do terminal Quantico."""
+    hoje = pd.Timestamp.now()
     linhas = []
     for df, tipo in ((calls, "call"), (puts, "put")):
         if df is None or df.empty:
             continue
+        tem_venc = "venc_opt" in df.columns
         for _, op in df.iterrows():
             k = num(op.get("strike"))
             iv = num(op.get("impliedVolatility"))
             oi = num(op.get("openInterest"))
             if iv <= 0 or oi <= 0 or not (spot * 0.90 <= k <= spot * 1.10):
                 continue
-            g = gamma_bs(spot, k, T, r, iv) * oi * 100 * spot * spot
+            vopt = op.get("venc_opt") if tem_venc else venc_str
+            dias = max((pd.Timestamp(vopt) - hoje).days, 0)
+            T = max(dias / 252, 0.5 / 252)
+            peso = 1.0 / (1.0 + dias / 5.0)     # 0DTE=1,0 · ~1sem≈0,5 · ~1mês≈0,2
+            g = gamma_bs(spot, k, T, r, iv) * oi * 100 * spot * spot * peso
             linhas.append({"strike": k, "gex": g if tipo == "call" else -g})
 
     gex_df = pd.DataFrame(linhas)
@@ -504,21 +530,26 @@ def calcular_gex(calls, puts, spot, venc_str, r):
     return por_strike, call_wall, put_wall, flip, dominio, venc_hoje
 
 def calcular_time_pressure(calls, puts, spot, venc_str, r):
-    """Time Pressure por strike (1.8 v1): charm/dia × OI × 100 × S.
+    """Time Pressure por strike (1.8): charm/dia × OI × 100 × S, somado sobre
+    múltiplos vencimentos (D5) com T individual e o mesmo peso decrescente do GEX.
     Calls +, puts −. Positivo = decaimento magnetiza p/ cima; picos = alívio → pullback."""
-    dias = max((pd.Timestamp(venc_str) - pd.Timestamp.now()).days, 0)
-    T = max(dias / 252, 0.5 / 252)
+    hoje = pd.Timestamp.now()
     linhas = []
     for df, tipo in ((calls, "call"), (puts, "put")):
         if df is None or df.empty:
             continue
+        tem_venc = "venc_opt" in df.columns
         for _, op in df.iterrows():
             k = num(op.get("strike"))
             iv = num(op.get("impliedVolatility"))
             oi = num(op.get("openInterest"))
             if iv <= 0 or oi <= 0 or not (spot * 0.90 <= k <= spot * 1.10):
                 continue
-            c = abs(charm_bs(spot, k, T, r, iv)) / 252.0 * oi * 100 * spot
+            vopt = op.get("venc_opt") if tem_venc else venc_str
+            dias = max((pd.Timestamp(vopt) - hoje).days, 0)
+            T = max(dias / 252, 0.5 / 252)
+            peso = 1.0 / (1.0 + dias / 5.0)
+            c = abs(charm_bs(spot, k, T, r, iv)) / 252.0 * oi * 100 * spot * peso
             linhas.append({"strike": k, "tp": c if tipo == "call" else -c})
     dft = pd.DataFrame(linhas)
     if dft.empty:
