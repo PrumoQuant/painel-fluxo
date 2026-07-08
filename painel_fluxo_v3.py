@@ -1,7 +1,17 @@
 # ============================================================================
-# PAINEL DE FLUXO DE OPÇÕES — VERSÃO 3.6 "CALIBRAÇÃO QUANTICO v2" (ESTUDO)
+# PAINEL DE FLUXO DE OPÇÕES — VERSÃO 3.6 "CALIBRAÇÃO QUANTICO v3" (ESTUDO)
 # PrumoQuant · https://prumoquant.streamlit.app
 # ============================================================================
+# NOVIDADES v3.7 — descoberta do menu "Total·1M·5M" (07/07/2026 fim do dia):
+#  D6. AGREGAÇÃO "TOTAL": o gráfico Delta Hedging da Quantico tem um filtro
+#      Total·1M·5M (visível no tutorial). "Total" = soma de TODOS os vencimentos
+#      com PESO IGUAL. O peso decrescente que a v3.6 usava (1/(1+dias/5))
+#      distorcia qual barra era a "maior" → deslocava o ímã (751→753) e cortava
+#      a magnitude dos vencimentos distantes. Agora o padrão é soma pura (Total),
+#      e o modo ponderado virou opção na barra lateral. NVENC também é ajustável
+#      ao vivo (slider), para calibrar contra o terminal deles sem editar código.
+#      HIPÓTESE a confirmar com prints reais: Total deve alinhar ímã e magnitude.
+#
 # NOVIDADES v3.6 — calibração com dados pareados Quantico (07/07/2026):
 #  D5. MULTI-VENCIMENTO: GEX e Time Pressure somam os 6 vencimentos mais
 #      próximos (o hedge do dealer existe em todas as datas abertas, não só
@@ -205,6 +215,20 @@ MOSTRAR_FUTUROS = st.sidebar.checkbox(
     "Converter níveis para futuros (ES/NQ)", value=True,
     help="Mostra muros e alvos convertidos para o futuro correspondente.")
 
+st.sidebar.markdown("---")
+st.sidebar.caption("Calibração vs Quantico")
+MODO_AGREGACAO = st.sidebar.radio(
+    "Agregação de vencimentos",
+    ["Total (soma pura — como o menu deles)", "Ponderado (0DTE dominante)"],
+    help="O gráfico da Quantico tem o filtro Total·1M·5M. 'Total' soma todos os "
+         "vencimentos com peso igual (tende a alinhar o ímã e a magnitude com eles). "
+         "'Ponderado' dá mais peso ao 0DTE (mais sensível ao dia).")
+NVENC_UI = st.sidebar.slider(
+    "Vencimentos somados (NVENC)", min_value=1, max_value=8, value=6,
+    help="Quantos vencimentos mais próximos entram no GEX e no Time Pressure. "
+         "Suba se a magnitude do SPY ficar baixa; desça se o carregamento pesar.")
+PESO_PONDERADO = MODO_AGREGACAO.startswith("Ponderado")
+
 with st.sidebar.expander("Preferências de exibição"):
     MOSTRAR_VWAP = st.checkbox("Gráfico Preço × VWAP (com bandas)", value=True)
     MODO_BANDAS = st.selectbox("Modo das bandas VWAP",
@@ -325,7 +349,7 @@ def historico_yf(ticker):
         return pd.DataFrame()
 
 @st.cache_data(ttl=20, show_spinner=False)
-def buscar_dados(ticker):
+def buscar_dados(ticker, nvenc=6):
     """Quotes + timesales + cadeia de opções. Retorna dict; erros como texto."""
     if ticker not in WHITELIST:
         return {"erro": f"{ticker} fora da whitelist (SPY/QQQ) — trava §2.1."}
@@ -356,7 +380,7 @@ def buscar_dados(ticker):
     #    para casar a magnitude do dealer com a Quantico (o hedge existe em todas
     #    as datas abertas, não só no 0DTE). Guardamos o venc de cada opção para
     #    calcular o T certo de cada uma. NVENC controla quantos vencimentos entram.
-    NVENC = 6
+    NVENC = max(1, int(nvenc))
     calls = puts = None
     venc = None          # vencimento mais próximo (0DTE), usado para 0DTE flag e rótulo
     vencs = []
@@ -475,11 +499,11 @@ def identificar_barras_chave(df, spot, col="gex", faixa=0.03):
         b["ultima_neg"] = float(neg["strike"].min())
     return b
 
-def calcular_gex(calls, puts, spot, venc_str, r):
+def calcular_gex(calls, puts, spot, venc_str, r, ponderar=False):
     """GEX por strike — dollar-gamma PLENO (Γ·OI·100·S²) somado sobre MÚLTIPLOS
-    vencimentos (D5). Cada opção usa o T do seu próprio vencimento (venc_opt) e
-    um peso que decai com a distância da data — o 0DTE continua dominante, mas os
-    vencimentos seguintes engrossam os muros até a magnitude do terminal Quantico."""
+    vencimentos (D5). Cada opção usa o T do seu próprio vencimento. Se ponderar=True,
+    aplica peso 1/(1+dias/5) (0DTE dominante); se False (padrão), soma pura 'Total'
+    como o menu Total·1M·5M do terminal Quantico — alinha ímã e magnitude com eles."""
     hoje = pd.Timestamp.now()
     linhas = []
     for df, tipo in ((calls, "call"), (puts, "put")):
@@ -495,7 +519,7 @@ def calcular_gex(calls, puts, spot, venc_str, r):
             vopt = op.get("venc_opt") if tem_venc else venc_str
             dias = max((pd.Timestamp(vopt) - hoje).days, 0)
             T = max(dias / 252, 0.5 / 252)
-            peso = 1.0 / (1.0 + dias / 5.0)     # 0DTE=1,0 · ~1sem≈0,5 · ~1mês≈0,2
+            peso = (1.0 / (1.0 + dias / 5.0)) if ponderar else 1.0
             g = gamma_bs(spot, k, T, r, iv) * oi * 100 * spot * spot * peso
             linhas.append({"strike": k, "gex": g if tipo == "call" else -g})
 
@@ -529,9 +553,9 @@ def calcular_gex(calls, puts, spot, venc_str, r):
         venc_hoje = False
     return por_strike, call_wall, put_wall, flip, dominio, venc_hoje
 
-def calcular_time_pressure(calls, puts, spot, venc_str, r):
+def calcular_time_pressure(calls, puts, spot, venc_str, r, ponderar=False):
     """Time Pressure por strike (1.8): charm/dia × OI × 100 × S, somado sobre
-    múltiplos vencimentos (D5) com T individual e o mesmo peso decrescente do GEX.
+    múltiplos vencimentos (D5) com T individual. peso condicional igual ao GEX.
     Calls +, puts −. Positivo = decaimento magnetiza p/ cima; picos = alívio → pullback."""
     hoje = pd.Timestamp.now()
     linhas = []
@@ -548,7 +572,7 @@ def calcular_time_pressure(calls, puts, spot, venc_str, r):
             vopt = op.get("venc_opt") if tem_venc else venc_str
             dias = max((pd.Timestamp(vopt) - hoje).days, 0)
             T = max(dias / 252, 0.5 / 252)
-            peso = 1.0 / (1.0 + dias / 5.0)
+            peso = (1.0 / (1.0 + dias / 5.0)) if ponderar else 1.0
             c = abs(charm_bs(spot, k, T, r, iv)) / 252.0 * oi * 100 * spot * peso
             linhas.append({"strike": k, "tp": c if tipo == "call" else -c})
     dft = pd.DataFrame(linhas)
@@ -929,7 +953,7 @@ if r_global is None:
 # --- Coleta e derivação por ativo -------------------------------------------
 dados_ativos, falhas = {}, {}
 for tk in tickers_para_rodar:
-    bruto = buscar_dados(tk)
+    bruto = buscar_dados(tk, NVENC_UI)
     if bruto.get("erro"):
         falhas[tk] = bruto["erro"]
         continue
@@ -940,9 +964,9 @@ for tk in tickers_para_rodar:
             "cadeia de opções indisponível no momento"
         continue
 
-    por_strike, cw, pw, flip, dominio, v_hoje = calcular_gex(calls, puts, spot, venc, r_global)
+    por_strike, cw, pw, flip, dominio, v_hoje = calcular_gex(calls, puts, spot, venc, r_global, PESO_PONDERADO)
     b_gex = identificar_barras_chave(por_strike, spot, "gex")
-    tp_df = calcular_time_pressure(calls, puts, spot, venc, r_global)
+    tp_df = calcular_time_pressure(calls, puts, spot, venc, r_global, PESO_PONDERADO)
     b_tp = identificar_barras_chave(tp_df, spot, "tp")
     comp, vend, fluxo_df = calcular_fluxo_institucional(calls, puts, spot)
     b_fluxo = identificar_barras_chave(fluxo_df, spot, "notional")
@@ -970,7 +994,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v3.6</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v3.7</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
