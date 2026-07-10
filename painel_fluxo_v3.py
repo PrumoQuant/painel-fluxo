@@ -696,52 +696,86 @@ def _forca_indicadores(b_gex, b_tp, b_fluxo, spot):
 
 
 def direcionamento_abertura(tk, spot, setup, b_gex, b_tp, b_fluxo, comp, vend,
-                            veto_ativo=False):
-    """Direcionamento condicional de abertura, no espírito do sinal do Striking Bell,
-    porém HONESTO: sem porcentagem de confiança (não temos histórico para calibrá-la
-    ainda — isso é a Fase 2.3). Entrega o que É defensável agora: os níveis-gatilho,
-    o alvo (maior barra na direção) e a invalidação, mais o grau de concordância dos
-    3 indicadores expresso como CONVERGÊNCIA (3/3, 2/3...), que é fato, não chute."""
-    mp = b_gex.get("maior_pos")           # ímã de alta (alvo comprador)
-    mn = b_gex.get("maior_neg")           # defesa/alvo de baixa
-    pn = b_gex.get("primeira_neg")        # 1ª linha de defesa (gatilho de baixa)
-    pp = b_gex.get("primeira_pos")        # 1ª barra positiva (gatilho de alta)
+                            veto_ativo=False, r_fut=None, nome_fut=None):
+    """Direcionamento no formato EXATO do Striking Bell: lê o nível no SPY/QQQ,
+    manda EXECUTAR no futuro (ES/MES ou NQ/MNQ), com alvo e stop em PONTOS do futuro.
+    Ex.: 'Se o QQQ segurar acima de 725 → COMPRE no NQ, alvo 26.180, stop 50 pts'.
+    Português direto. Honesto: sem % de confiança (exige histórico — Fase 2.3)."""
+    mp = b_gex.get("maior_pos")           # ímã de alta = alvo comprador
+    mn = b_gex.get("maior_neg")           # defesa/ímã de baixa = alvo vendedor
+    pn = b_gex.get("primeira_neg")        # 1ª defesa = gatilho/stop de baixa
+    pp = b_gex.get("primeira_pos")        # 1ª barra+ = gatilho de alta
     alta, baixa = _forca_indicadores(b_gex, b_tp, b_fluxo, spot)
     net = comp - vend
 
-    linhas = []
-    linhas.append(f"ATIVO ......: {tk} @ {spot:.2f}")
-    if setup:
-        linhas.append(f"SETUP ......: {setup['codigo']} — {setup['nome']} "
-                      f"({setup['vies']})")
-    # cenário de ALTA (condicional)
-    if pp is not None and mp is not None and mp > spot:
-        linhas.append(f"SE ROMPER ..: acima de {pp:.0f} sustentando "
-                      f"→ alvo {mp:.0f} (ímã de alta)")
-    elif mp is not None and mp > spot:
-        linhas.append(f"CENÁRIO ALTA: ímã de alta em {mp:.0f} acima "
-                      f"(precisa de gatilho de rompimento)")
-    # cenário de BAIXA (condicional)
-    if pn is not None and spot > pn:
-        alvo_baixa = f"{mn:.0f}" if mn is not None else "1ª barra− perdida"
-        linhas.append(f"SE PERDER ..: abaixo de {pn:.0f} "
-                      f"→ alvo {alvo_baixa} (defesa/ímã de baixa)")
-    elif mn is not None and mn < spot:
-        linhas.append(f"CENÁRIO BAIXA: defesa/ímã de baixa em {mn:.0f} abaixo")
-    # convergência (FATO, não previsão)
-    if alta > baixa:
-        conv = f"CONVERGÊNCIA: {alta}/3 indicadores inclinados p/ ALTA"
-    elif baixa > alta:
-        conv = f"CONVERGÊNCIA: {baixa}/3 indicadores inclinados p/ BAIXA"
-    else:
-        conv = "CONVERGÊNCIA: indicadores DIVIDIDOS — sinal fraco, cautela"
-    linhas.append(conv)
-    if net != 0:
-        linhas.append(f"FLUXO AGORA : {'comprador' if net > 0 else 'vendedor'} "
-                      f"({fmt_usd(abs(net))} de prêmio agressor no dia)")
+    # micro-futuro (o que day-trader usa): NQ→MNQ, ES→MES
+    exec_fut = "NQ" if tk == "QQQ" else "ES"
+    micro = "MNQ" if tk == "QQQ" else "MES"
+
+    def para_fut(nivel):
+        """Converte um nível do ETF para o preço equivalente no futuro."""
+        if nivel is None or not r_fut:
+            return None
+        return nivel * r_fut
+
+    def pts(n_etf_ini, n_etf_fim):
+        """Distância em PONTOS do futuro entre dois níveis do ETF."""
+        a, b = para_fut(n_etf_ini), para_fut(n_etf_fim)
+        if a is None or b is None:
+            return None
+        return abs(b - a)
+
     if veto_ativo:
-        linhas.append("VETO .......: QQQ contra SPY → operação PROIBIDA pela regra")
-    return "\n".join(linhas)
+        return (f"**{tk} / {exec_fut}:** operação PROIBIDA agora — o QQQ aponta baixa "
+                f"sem o SPY confirmar. Sem SPY, não entra no {exec_fut}. Fica de fora.")
+
+    gatilho_alta = pp if (pp is not None and pp >= spot) else None
+    gatilho_baixa = pn if (pn is not None and pn <= spot) else None
+
+    frases = []
+    # --- cenário comprador (executa no futuro) ---
+    if gatilho_alta is not None and mp is not None and mp > gatilho_alta:
+        alvo_fut = para_fut(mp)
+        d_pts = pts(gatilho_alta, mp)
+        alvo_txt = f"{alvo_fut:,.0f}".replace(",", ".") if alvo_fut else f"{mp:.0f}"
+        pts_txt = f" (~{d_pts:.0f} pts {exec_fut})" if d_pts else ""
+        frases.append(f"🟢 Se o **{tk} segurar acima de {gatilho_alta:.0f}** → "
+                      f"COMPRE no **{exec_fut}/{micro}**, alvo **{alvo_txt}**{pts_txt}. "
+                      f"Stop se o {tk} perder {gatilho_alta:.0f}.")
+    elif mp is not None and mp > spot:
+        alvo_fut = para_fut(mp)
+        alvo_txt = f"{alvo_fut:,.0f}".replace(",", ".") if alvo_fut else f"{mp:.0f}"
+        frases.append(f"🟢 Ímã de alta no {tk} em **{mp:.0f}** (≈ {alvo_txt} no "
+                      f"{exec_fut}). Comprar só no rompimento com força.")
+    # --- cenário vendedor (executa no futuro) ---
+    if gatilho_baixa is not None and mn is not None and mn < gatilho_baixa:
+        alvo_fut = para_fut(mn)
+        d_pts = pts(gatilho_baixa, mn)
+        alvo_txt = f"{alvo_fut:,.0f}".replace(",", ".") if alvo_fut else f"{mn:.0f}"
+        pts_txt = f" (~{d_pts:.0f} pts {exec_fut})" if d_pts else ""
+        frases.append(f"🔴 Se o **{tk} perder {gatilho_baixa:.0f}** → "
+                      f"VENDA no **{exec_fut}/{micro}**, alvo **{alvo_txt}**{pts_txt}. "
+                      f"Stop se voltar acima de {gatilho_baixa:.0f}.")
+    elif mn is not None and mn < spot:
+        alvo_fut = para_fut(mn)
+        alvo_txt = f"{alvo_fut:,.0f}".replace(",", ".") if alvo_fut else f"{mn:.0f}"
+        frases.append(f"🔴 Defesa no {tk} em **{mn:.0f}** (≈ {alvo_txt} no {exec_fut}) — "
+                      f"alvo vendedor se perder os níveis acima.")
+
+    if not frases:
+        frases.append(f"⚪ **{tk} / {exec_fut}** sem gatilho claro agora — esperar o "
+                      f"preço chegar numa barra-chave antes de entrar.")
+
+    if alta > baixa:
+        contexto = f"Indicadores pendem para **alta** ({alta}/3)."
+    elif baixa > alta:
+        contexto = f"Indicadores pendem para **baixa** ({baixa}/3)."
+    else:
+        contexto = "Indicadores **divididos** — sinal fraco, cautela redobrada."
+    fluxo_txt = ("comprador" if net > 0 else "vendedor") if net != 0 else "neutro"
+    contexto += f" Fluxo agora: **{fluxo_txt}**."
+
+    return "\n\n".join(frases) + "\n\n" + contexto
 
 # ----------------------------------------------------------------------------
 # MENTOR DE DISCIPLINA — as 15 regras do operador
@@ -1062,7 +1096,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v3.8</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v3.10</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
@@ -1251,17 +1285,23 @@ with abas[4]:
                   dados_ativos["QQQ"]["setup"]["codigo"] == "S2" and
                   (not dados_ativos["SPY"]["setup"] or
                    dados_ativos["SPY"]["setup"]["codigo"] != "S2"))
-    for tk in ativos_ok:
+    ordem_dir = [t for t in ("QQQ", "SPY") if t in ativos_ok]  # NQ/QQQ primeiro
+    for tk in ordem_dir:
         d = dados_ativos[tk]
         veto_tk = veto_geral and tk == "QQQ"
+        _nf, _pf, _rf = razao_futuro(tk, d["spot"])
         texto = direcionamento_abertura(tk, d["spot"], d["setup"], d["b_gex"],
                                         d["b_tp"], d["b_fluxo"], d["comp"],
-                                        d["vend"], veto_ativo=veto_tk)
-        st.markdown(f'<div class="terminal">{texto}\n'
-                    f'<span class="aviso">Leitura condicional de ESTUDO — NÃO é '
-                    f'recomendação. Sem % de confiança: isso exige histórico de '
-                    f'sinais (Fase 2.3), que ainda não temos. A decisão e o risco '
-                    f'são do operador.</span></div>', unsafe_allow_html=True)
+                                        d["vend"], veto_ativo=veto_tk,
+                                        r_fut=_rf, nome_fut=_nf)
+        import re as _re
+        texto_html = _re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", texto).replace("\n\n", "<br>")
+        st.markdown(f'<div class="setup-linha" style="padding:12px 16px;'
+                    f'font-size:0.92rem;line-height:1.7;">{texto_html}</div>',
+                    unsafe_allow_html=True)
+    st.caption("Leitura condicional de ESTUDO — NÃO é recomendação. Sem % de "
+               "confiança: isso exige histórico de sinais (Fase 2.3). A decisão e "
+               "o risco são do operador.")
     st.markdown("---")
 
     for tk in ativos_ok:
