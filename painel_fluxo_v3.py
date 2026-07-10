@@ -115,14 +115,14 @@ st.markdown("""
     /* ---------- Mini-painel estilo Quantico ---------- */
     .qpanel-head { display: flex; justify-content: space-between;
         align-items: baseline; padding: 8px 10px 0 10px;
-        background: #10161d; border: 1px solid #1e2936; border-bottom: 0;
+        background: #0d1117; border: 1px solid #1c2733; border-bottom: 0;
         border-radius: 10px 10px 0 0; }
     .qpanel-title { font-size: 0.78rem; font-weight: 700; color: #d7dee6; }
     .qpanel-tk { font-size: 0.74rem; color: #8b98a5;
         font-variant-numeric: tabular-nums; }
     .qpanel-tk b { color: #e6edf3; }
     .qpanel-sub { display: flex; gap: 14px; flex-wrap: wrap;
-        padding: 2px 10px 6px 10px; background: #10161d;
+        padding: 2px 10px 6px 10px; background: #0d1117;
         border-left: 1px solid #1e2936; border-right: 1px solid #1e2936;
         font-size: 0.72rem; color: #8b98a5;
         font-variant-numeric: tabular-nums; }
@@ -680,6 +680,69 @@ def detectar_setup(barras, spot, flip, dominio, cw, pw):
                     invalidacao="romper um dos extremos")
     return None
 
+
+def _forca_indicadores(b_gex, b_tp, b_fluxo, spot):
+    """Conta quantos dos 3 indicadores concordam com viés de alta e de baixa,
+    olhando a maior barra de cada um acima/abaixo do spot. Retorna (alta, baixa)."""
+    alta = baixa = 0
+    for b, col in ((b_gex, None), (b_tp, None), (b_fluxo, None)):
+        mp, mn = b.get("maior_pos"), b.get("maior_neg")
+        # ímã positivo acima do preço puxa p/ cima; negativo abaixo puxa p/ baixo
+        if mp is not None and mp > spot:
+            alta += 1
+        if mn is not None and mn < spot:
+            baixa += 1
+    return alta, baixa
+
+
+def direcionamento_abertura(tk, spot, setup, b_gex, b_tp, b_fluxo, comp, vend,
+                            veto_ativo=False):
+    """Direcionamento condicional de abertura, no espírito do sinal do Striking Bell,
+    porém HONESTO: sem porcentagem de confiança (não temos histórico para calibrá-la
+    ainda — isso é a Fase 2.3). Entrega o que É defensável agora: os níveis-gatilho,
+    o alvo (maior barra na direção) e a invalidação, mais o grau de concordância dos
+    3 indicadores expresso como CONVERGÊNCIA (3/3, 2/3...), que é fato, não chute."""
+    mp = b_gex.get("maior_pos")           # ímã de alta (alvo comprador)
+    mn = b_gex.get("maior_neg")           # defesa/alvo de baixa
+    pn = b_gex.get("primeira_neg")        # 1ª linha de defesa (gatilho de baixa)
+    pp = b_gex.get("primeira_pos")        # 1ª barra positiva (gatilho de alta)
+    alta, baixa = _forca_indicadores(b_gex, b_tp, b_fluxo, spot)
+    net = comp - vend
+
+    linhas = []
+    linhas.append(f"ATIVO ......: {tk} @ {spot:.2f}")
+    if setup:
+        linhas.append(f"SETUP ......: {setup['codigo']} — {setup['nome']} "
+                      f"({setup['vies']})")
+    # cenário de ALTA (condicional)
+    if pp is not None and mp is not None and mp > spot:
+        linhas.append(f"SE ROMPER ..: acima de {pp:.0f} sustentando "
+                      f"→ alvo {mp:.0f} (ímã de alta)")
+    elif mp is not None and mp > spot:
+        linhas.append(f"CENÁRIO ALTA: ímã de alta em {mp:.0f} acima "
+                      f"(precisa de gatilho de rompimento)")
+    # cenário de BAIXA (condicional)
+    if pn is not None and spot > pn:
+        alvo_baixa = f"{mn:.0f}" if mn is not None else "1ª barra− perdida"
+        linhas.append(f"SE PERDER ..: abaixo de {pn:.0f} "
+                      f"→ alvo {alvo_baixa} (defesa/ímã de baixa)")
+    elif mn is not None and mn < spot:
+        linhas.append(f"CENÁRIO BAIXA: defesa/ímã de baixa em {mn:.0f} abaixo")
+    # convergência (FATO, não previsão)
+    if alta > baixa:
+        conv = f"CONVERGÊNCIA: {alta}/3 indicadores inclinados p/ ALTA"
+    elif baixa > alta:
+        conv = f"CONVERGÊNCIA: {baixa}/3 indicadores inclinados p/ BAIXA"
+    else:
+        conv = "CONVERGÊNCIA: indicadores DIVIDIDOS — sinal fraco, cautela"
+    linhas.append(conv)
+    if net != 0:
+        linhas.append(f"FLUXO AGORA : {'comprador' if net > 0 else 'vendedor'} "
+                      f"({fmt_usd(abs(net))} de prêmio agressor no dia)")
+    if veto_ativo:
+        linhas.append("VETO .......: QQQ contra SPY → operação PROIBIDA pela regra")
+    return "\n".join(linhas)
+
 # ----------------------------------------------------------------------------
 # MENTOR DE DISCIPLINA — as 15 regras do operador
 # ----------------------------------------------------------------------------
@@ -787,18 +850,23 @@ def grafico_barras_quantico(df, col, spot, barras, altura=260, horizontal=False)
     fig = go.Figure()
     if horizontal:
         fig.add_trace(go.Bar(y=df["strike"], x=df[col], orientation="h",
-                             marker_color=cores))
-        fig.add_hline(y=spot, line_dash="dash", line_color="#94a3b8", line_width=1)
+                             marker_color=cores, width=0.82))
+        fig.add_hline(y=spot, line_dash="dash", line_color="#9ca3af", line_width=1)
     else:
-        fig.add_trace(go.Bar(x=df["strike"], y=df[col], marker_color=cores))
-        fig.add_vline(x=spot, line_dash="dash", line_color="#94a3b8", line_width=1)
+        fig.add_trace(go.Bar(x=df["strike"], y=df[col], marker_color=cores,
+                             width=0.82))
+        fig.add_vline(x=spot, line_dash="dash", line_color="#9ca3af", line_width=1)
     fig.update_traces(marker_line_width=0)
     fig.update_layout(template="plotly_dark",
-                      paper_bgcolor="#10161d", plot_bgcolor="#10161d",
-                      margin=dict(l=6, r=6, t=4, b=6), height=altura,
-                      showlegend=False,
-                      xaxis=dict(gridcolor="#1c2733", zerolinecolor="#26313d"),
-                      yaxis=dict(gridcolor="#1c2733", zerolinecolor="#26313d"))
+                      paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+                      margin=dict(l=4, r=4, t=4, b=4), height=altura,
+                      showlegend=False, bargap=0.15,
+                      font=dict(family="ui-monospace, 'Cascadia Code', monospace",
+                                size=10, color="#8b98a5"),
+                      xaxis=dict(gridcolor="#161d26", zerolinecolor="#232d38",
+                                 tickfont=dict(size=9)),
+                      yaxis=dict(gridcolor="#161d26", zerolinecolor="#232d38",
+                                 tickfont=dict(size=9)))
     return fig
 
 def painel_quantico(titulo, tk, spot, df, col, barras, key,
@@ -994,7 +1062,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v3.7</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v3.8</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
@@ -1175,6 +1243,27 @@ with abas[4]:
     st.caption("S6 é o mais assertivo · S2 é o mais perigoso e EXIGE confirmação do "
                "SPY · S5 se evita. PrumoQuant Bell (2.3): em construção — sinal "
                "congelado às 9h29:59 NY e avaliado até 10h00 com MAE/MFE.")
+
+    # --- DIRECIONAMENTO DE ABERTURA (estilo Striking Bell, sem % inventada) ---
+    st.markdown("### 🔔 Direcionamento de Abertura")
+    veto_geral = ("SPY" in dados_ativos and "QQQ" in dados_ativos and
+                  dados_ativos["QQQ"]["setup"] and
+                  dados_ativos["QQQ"]["setup"]["codigo"] == "S2" and
+                  (not dados_ativos["SPY"]["setup"] or
+                   dados_ativos["SPY"]["setup"]["codigo"] != "S2"))
+    for tk in ativos_ok:
+        d = dados_ativos[tk]
+        veto_tk = veto_geral and tk == "QQQ"
+        texto = direcionamento_abertura(tk, d["spot"], d["setup"], d["b_gex"],
+                                        d["b_tp"], d["b_fluxo"], d["comp"],
+                                        d["vend"], veto_ativo=veto_tk)
+        st.markdown(f'<div class="terminal">{texto}\n'
+                    f'<span class="aviso">Leitura condicional de ESTUDO — NÃO é '
+                    f'recomendação. Sem % de confiança: isso exige histórico de '
+                    f'sinais (Fase 2.3), que ainda não temos. A decisão e o risco '
+                    f'são do operador.</span></div>', unsafe_allow_html=True)
+    st.markdown("---")
+
     for tk in ativos_ok:
         d = dados_ativos[tk]
         s = d["setup"]
