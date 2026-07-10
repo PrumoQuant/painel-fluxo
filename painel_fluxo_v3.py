@@ -1079,7 +1079,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v3.12</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v3.13</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
@@ -1262,7 +1262,22 @@ with abas[4]:
                "congelado às 9h29:59 NY e avaliado até 10h00 com MAE/MFE.")
 
     # --- DIRECIONAMENTO DE ABERTURA (estilo Striking Bell, sem % inventada) ---
-    st.markdown("### 🔔 Direcionamento de Abertura")
+    dias_sem = ["segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo"]
+    dia_txt = f"{dias_sem[agora_ny.weekday()]}, {agora_ny.strftime('%d/%m/%Y')}"
+    estado_mkt = ("🟢 mercado aberto" if (agora_ny.weekday() < 5 and
+                  dtime(9, 30) <= agora_ny.time() < dtime(16, 0))
+                  else ("🟡 pré-mercado" if (agora_ny.weekday() < 5 and
+                        dtime(4, 0) <= agora_ny.time() < dtime(9, 30))
+                        else "🔴 mercado fechado"))
+    st.markdown(
+        f"### 🔔 Direcionamento de Abertura"
+        f"<br><span style='font-size:0.8rem;color:#8b98a5;font-weight:400'>"
+        f"{dia_txt} · {agora_ny.strftime('%H:%M')} NY / {agora_br.strftime('%H:%M')} BR"
+        f" · {estado_mkt}</span>", unsafe_allow_html=True)
+    if estado_mkt == "🔴 mercado fechado":
+        st.caption("⚠️ Mercado FECHADO — os níveis abaixo são do último dado "
+                   "disponível e não refletem movimento ao vivo. Sinal válido só "
+                   "com o mercado aberto.")
     veto_geral = ("SPY" in dados_ativos and "QQQ" in dados_ativos and
                   dados_ativos["QQQ"]["setup"] and
                   dados_ativos["QQQ"]["setup"]["codigo"] == "S2" and
