@@ -82,101 +82,113 @@ st.set_page_config(page_title="PrumoQuant — Fluxo de Opções (estudo)",
 
 st.markdown("""
 <style>
-    .stApp { background-color: #0a0d12; }
-    section[data-testid="stSidebar"] { background-color: #0e141b; }
-    h1, h2, h3, h4, p, span, label { color: #e6edf3; }
-    .block-container { padding-top: 1.0rem; max-width: 1560px; }
+    /* ===== PrumoQuant — tema clean monocromático (inspirado no terminal Quantico) ===== */
+    :root {
+        --bg: #0a0d12; --surface: #12161c; --surface2: #161b22;
+        --line: #232a33; --line-soft: #1b2129;
+        --ink: #e6edf3; --ink-2: #9aa5b1; --ink-3: #6b7580;
+        --accent: #d9a441;         /* âmbar, usado com MUITA restrição */
+        --up: #3fb950; --down: #f0533f; --bar: #4a90d9;
+    }
+    .stApp { background: var(--bg); }
+    section[data-testid="stSidebar"] { background: #0c1015; border-right: 1px solid var(--line-soft); }
+    h1,h2,h3,h4,h5,p,span,label,div { color: var(--ink); }
+    .block-container { padding-top: 0.9rem; max-width: 1500px; }
 
-    /* ---------- Cabeçalho institucional ---------- */
-    .pq-header { display: flex; justify-content: space-between;
-        align-items: flex-end; padding: 2px 0 10px 0; margin-bottom: 4px;
-        border-bottom: 1px solid #1c2733; }
-    .pq-logo { font-size: 1.55rem; font-weight: 800; letter-spacing: 1px;
-        color: #e6edf3; }
-    .pq-logo .fio { color: #fbbf24; }
-    .pq-sub { display: block; font-size: 0.72rem; color: #8b98a5;
-        letter-spacing: 2px; text-transform: uppercase; margin-top: 2px; }
-    .pq-meta { text-align: right; font-size: 0.72rem; color: #8b98a5;
-        line-height: 1.6; }
+    /* ---- cabeçalho ---- */
+    .pq-header { display:flex; justify-content:space-between; align-items:flex-end;
+        padding:2px 0 12px 0; margin-bottom:6px; border-bottom:1px solid var(--line); }
+    .pq-logo { font-size:1.4rem; font-weight:600; letter-spacing:0.5px; color:var(--ink); }
+    .pq-logo .fio { color:var(--accent); }
+    .pq-sub { display:block; font-size:0.66rem; color:var(--ink-3);
+        letter-spacing:2.5px; text-transform:uppercase; margin-top:3px; font-weight:500; }
+    .pq-meta { text-align:right; font-size:0.7rem; color:var(--ink-3); line-height:1.7;
+        font-variant-numeric:tabular-nums; }
 
-    .selo { display: inline-block; padding: 3px 10px; border-radius: 999px;
-        font-size: 0.7rem; font-weight: 700; letter-spacing: 1px; }
-    .selo-aberto  { background: #052e16; color: #22c55e; border: 1px solid #14532d; }
-    .selo-fechado { background: #450a0a; color: #f87171; border: 1px solid #7f1d1d; }
-    .selo-pre     { background: #422006; color: #fbbf24; border: 1px solid #92400e; }
+    .selo { display:inline-block; padding:2px 9px; border-radius:4px; font-size:0.64rem;
+        font-weight:600; letter-spacing:1px; border:1px solid var(--line); color:var(--ink-2);
+        background:var(--surface); }
 
-    /* ---------- Abas ---------- */
-    .stTabs [data-baseweb="tab-list"] { gap: 4px; border-bottom: 1px solid #1c2733; }
-    .stTabs [data-baseweb="tab"] { background: transparent; color: #8b98a5;
-        font-size: 0.85rem; padding: 8px 14px; border-radius: 8px 8px 0 0; }
-    .stTabs [aria-selected="true"] { color: #e6edf3; background: #131a22;
-        border-bottom: 2px solid #fbbf24; }
+    /* ---- abas: linha fina, sem caixinhas ---- */
+    .stTabs [data-baseweb="tab-list"] { gap:2px; border-bottom:1px solid var(--line); }
+    .stTabs [data-baseweb="tab"] { background:transparent; color:var(--ink-3);
+        font-size:0.82rem; font-weight:500; padding:8px 16px; border-radius:0; }
+    .stTabs [aria-selected="true"] { color:var(--ink); background:transparent;
+        border-bottom:2px solid var(--accent); }
 
-    /* ---------- Mini-painel estilo Quantico ---------- */
-    .qpanel-head { display: flex; justify-content: space-between;
-        align-items: baseline; padding: 8px 10px 0 10px;
-        background: #0d1117; border: 1px solid #1c2733; border-bottom: 0;
-        border-radius: 10px 10px 0 0; }
-    .qpanel-title { font-size: 0.78rem; font-weight: 700; color: #d7dee6; }
-    .qpanel-tk { font-size: 0.74rem; color: #8b98a5;
-        font-variant-numeric: tabular-nums; }
-    .qpanel-tk b { color: #e6edf3; }
-    .qpanel-sub { display: flex; gap: 14px; flex-wrap: wrap;
-        padding: 2px 10px 6px 10px; background: #0d1117;
-        border-left: 1px solid #1e2936; border-right: 1px solid #1e2936;
-        font-size: 0.72rem; color: #8b98a5;
-        font-variant-numeric: tabular-nums; }
-    .verde { color: #22c55e !important; }
-    .vermelho { color: #ef4444 !important; }
-    .amarelo { color: #eab308 !important; }
+    /* ---- mini-painel dos indicadores ---- */
+    .qpanel-head { display:flex; justify-content:space-between; align-items:baseline;
+        padding:9px 12px 0 12px; background:var(--surface); border:1px solid var(--line);
+        border-bottom:0; border-radius:6px 6px 0 0; }
+    .qpanel-title { font-size:0.74rem; font-weight:600; color:var(--ink); letter-spacing:0.3px; }
+    .qpanel-tk { font-size:0.72rem; color:var(--ink-3); font-variant-numeric:tabular-nums; }
+    .qpanel-tk b { color:var(--ink); font-weight:600; }
+    .qpanel-sub { display:flex; gap:16px; flex-wrap:wrap; padding:3px 12px 7px 12px;
+        background:var(--surface); border-left:1px solid var(--line); border-right:1px solid var(--line);
+        font-size:0.7rem; color:var(--ink-3); font-variant-numeric:tabular-nums; }
+    .up { color:var(--up) !important; } .down { color:var(--down) !important; }
 
-    /* ---------- Cartões ---------- */
-    .cartao { background: linear-gradient(180deg, #131a22 0%, #10161d 100%);
-        border: 1px solid #1e2936; border-radius: 10px;
-        padding: 10px 12px 8px 12px; height: 100%; }
-    .cartao .rotulo { font-size: 0.64rem; letter-spacing: 1.4px;
-        text-transform: uppercase; color: #8b98a5; margin-bottom: 2px; }
-    .cartao .valor { font-size: 1.2rem; font-weight: 700; color: #e6edf3;
-        font-variant-numeric: tabular-nums; }
-    .cartao .sub { font-size: 0.7rem; color: #8b98a5; margin-top: 2px; }
+    /* ---- QUADRO do direcionamento (a assinatura da tela: clean, monocromático) ---- */
+    .sinal-box { background:var(--surface); border:1px solid var(--line);
+        border-radius:8px; padding:22px 26px; margin:6px 0 4px 0; }
+    .sinal-titulo { font-size:0.66rem; letter-spacing:2.5px; text-transform:uppercase;
+        color:var(--ink-3); font-weight:600; margin-bottom:3px; }
+    .sinal-meta { font-size:0.72rem; color:var(--ink-3); margin-bottom:16px;
+        font-variant-numeric:tabular-nums; }
+    .sinal-linha { font-size:1.0rem; line-height:1.85; color:var(--ink); font-weight:400; }
+    .sinal-linha .acao { font-weight:600; letter-spacing:0.5px; }
+    .sinal-nivel { font-weight:600; color:var(--ink); font-variant-numeric:tabular-nums; }
+    .sinal-ctx { font-size:0.8rem; color:var(--ink-2); margin-top:14px;
+        padding-top:12px; border-top:1px solid var(--line-soft); }
+    .sinal-nota { font-size:0.7rem; color:var(--ink-3); margin-top:8px; line-height:1.5; }
+    .sinal-veto { color:var(--ink); font-weight:500; }
 
-    /* ---------- Linha de disciplina ---------- */
-    .disciplina { font-size: 0.78rem; color: #9aa7b4; padding: 4px 0 0 0; }
-    .disciplina b { color: #fbbf24; font-weight: 700; }
+    /* ---- cartões ---- */
+    .cartao { background:var(--surface); border:1px solid var(--line); border-radius:6px;
+        padding:11px 13px 9px 13px; height:100%; }
+    .cartao .rotulo { font-size:0.62rem; letter-spacing:1.5px; text-transform:uppercase;
+        color:var(--ink-3); margin-bottom:3px; font-weight:500; }
+    .cartao .valor { font-size:1.15rem; font-weight:600; color:var(--ink);
+        font-variant-numeric:tabular-nums; }
+    .cartao .sub { font-size:0.68rem; color:var(--ink-3); margin-top:2px; }
 
-    /* ---------- Linha discreta de setup ---------- */
-    .setup-linha { font-size: 0.8rem; padding: 6px 12px; border-radius: 8px;
-        background: #10161d; border: 1px solid #1e2936;
-        margin: 2px 0 8px 0; color: #c9d4de; }
-    .setup-linha b { font-weight: 700; }
+    .disciplina { font-size:0.76rem; color:var(--ink-2); padding:6px 0 0 0; }
+    .disciplina b { color:var(--accent); font-weight:600; }
 
-    /* ---------- Régua de fluxo (Volume Imbalance) ---------- */
-    .fluxobar-wrap { background: #10161d; border: 1px solid #1e2936;
-        border-radius: 10px; padding: 8px 12px 10px 12px; margin: 2px 0 8px 0; }
-    .fluxobar-top { display: flex; justify-content: space-between;
-        flex-wrap: wrap; gap: 4px; font-size: 0.74rem; color: #8b98a5;
-        margin-bottom: 6px; }
-    .fluxobar { display: flex; height: 8px; border-radius: 999px;
-        overflow: hidden; background: #1e2936; }
-    .fluxobar .verde-seg { background: #22c55e; }
-    .fluxobar .verm-seg { background: #ef4444; }
-    .fluxobar-sub { display: flex; justify-content: space-between;
-        flex-wrap: wrap; gap: 4px; font-size: 0.74rem; color: #8b98a5;
-        margin-top: 6px; }
+    .setup-linha { font-size:0.8rem; padding:8px 14px; border-radius:6px;
+        background:var(--surface); border:1px solid var(--line); margin:2px 0 8px 0;
+        color:var(--ink-2); }
+    .setup-linha b { font-weight:600; color:var(--ink); }
 
-    /* ---------- Cartão terminal (setups) ---------- */
-    .terminal { background: #05100a; border: 1px solid #14532d;
-        border-radius: 10px; padding: 16px 20px;
-        font-family: 'Consolas', 'Courier New', monospace;
-        font-size: 0.88rem; line-height: 1.7; color: #86efac;
-        white-space: pre-wrap; margin-bottom: 12px; }
-    .terminal .titulo { color: #22c55e; font-weight: 700; }
-    .terminal .aviso { color: #6b7280; font-size: 0.76rem; }
-    .terminal .destaque { color: #fbbf24; font-weight: 700; }
-    .terminal .neg { color: #f87171; font-weight: 700; }
+    /* ---- régua Volume Imbalance ---- */
+    .fluxobar-wrap { background:var(--surface); border:1px solid var(--line);
+        border-radius:6px; padding:10px 14px 12px 14px; margin:2px 0 8px 0; }
+    .fluxobar-top { display:flex; justify-content:space-between; flex-wrap:wrap; gap:4px;
+        font-size:0.72rem; color:var(--ink-3); margin-bottom:7px; }
+    .fluxobar { display:flex; height:6px; border-radius:3px; overflow:hidden; background:var(--line); }
+    .fluxobar .verde-seg { background:var(--up); } .fluxobar .verm-seg { background:var(--down); }
+    .fluxobar-sub { display:flex; justify-content:space-between; flex-wrap:wrap; gap:4px;
+        font-size:0.72rem; color:var(--ink-3); margin-top:7px; font-variant-numeric:tabular-nums; }
+    .verde { color:var(--up) !important; } .vermelho { color:var(--down) !important; }
+    .amarelo { color:var(--ink-2) !important; }
 
-    .alerta-vermelho { border: 1px solid #7f1d1d !important;
-        background: #2d1414 !important; }
+    /* ---- placar do Bell (acertos/erros) ---- */
+    .placar { display:flex; gap:10px; margin:4px 0 10px 0; flex-wrap:wrap; }
+    .placar .cel { flex:1; min-width:80px; background:var(--surface); border:1px solid var(--line);
+        border-radius:6px; padding:10px 12px; text-align:center; }
+    .placar .cel .n { font-size:1.5rem; font-weight:600; font-variant-numeric:tabular-nums; }
+    .placar .cel .l { font-size:0.62rem; letter-spacing:1.5px; text-transform:uppercase;
+        color:var(--ink-3); margin-top:2px; }
+
+    /* cartão terminal antigo — neutralizado para o tema clean */
+    .terminal { background:var(--surface); border:1px solid var(--line); border-radius:6px;
+        padding:16px 20px; font-family:'Consolas','Courier New',monospace; font-size:0.84rem;
+        line-height:1.7; color:var(--ink-2); white-space:pre-wrap; margin-bottom:12px; }
+    .terminal .titulo { color:var(--ink); font-weight:600; }
+    .terminal .aviso { color:var(--ink-3); font-size:0.72rem; }
+    .terminal .destaque { color:var(--ink); font-weight:600; }
+    .terminal .neg { color:var(--ink-2); font-weight:500; }
+    .alerta-vermelho { border:1px solid var(--line) !important; background:var(--surface2) !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -681,6 +693,30 @@ def detectar_setup(barras, spot, flip, dominio, cw, pw):
     return None
 
 
+def _bell_placar():
+    """Placar do PrumoQuant Bell (acertos/erros/breakeven). Enquanto o registro
+    de sinais (Fase 2.3) não estiver ligado, mostra zeros e explica — NÃO inventa
+    números. Quando o histórico existir, esta função lê dele."""
+    try:
+        registros = st.session_state.get("bell_registros", [])
+    except Exception:
+        registros = []
+    win = sum(1 for r in registros if r.get("resultado") == "WIN")
+    loss = sum(1 for r in registros if r.get("resultado") == "LOSS")
+    be = sum(1 for r in registros if r.get("resultado") == "BE")
+    total_dec = win + loss
+    taxa = f"{100*win/total_dec:.0f}%" if total_dec else "—"
+    if not registros:
+        nota = ("Ainda sem sinais registrados. O placar começa a contar quando o "
+                "registro automático do Bell for ativado (Fase 2.3): cada sinal é "
+                "congelado às 9h29:59 NY e avaliado até 10h00. Registramos TODOS "
+                "os sinais, inclusive os que não deram certo.")
+    else:
+        nota = (f"{total_dec} sinais avaliados · {be} no zero a zero. Taxa considera "
+                f"só os que fecharam com resultado (exclui breakeven).")
+    return {"win": win, "loss": loss, "be": be, "taxa": taxa, "nota": nota}
+
+
 def _forca_indicadores(b_gex, b_tp, b_fluxo, spot):
     """Conta quantos dos 3 indicadores concordam com viés de alta e de baixa,
     olhando a maior barra de cada um acima/abaixo do spot. Retorna (alta, baixa)."""
@@ -697,56 +733,51 @@ def _forca_indicadores(b_gex, b_tp, b_fluxo, spot):
 
 def direcionamento_abertura(tk, spot, setup, b_gex, b_tp, b_fluxo, comp, vend,
                             veto_ativo=False, r_fut=None, nome_fut=None):
-    """Direcionamento no formato EXATO do Striking Bell: lê o nível no SPY/QQQ,
-    manda EXECUTAR no futuro (NQ/MNQ ou ES/MES) com stop/take em PONTOS FIXOS
-    redondos (como eles: 50 pts NQ, 7 pts ES). Usa 'atingir e se manter' (hold).
-    Honesto: sem % de confiança (exige histórico — Fase 2.3)."""
-    mp = b_gex.get("maior_pos")           # ímã de alta
-    mn = b_gex.get("maior_neg")           # ímã/defesa de baixa
-    pn = b_gex.get("primeira_neg")        # 1ª defesa
-    pp = b_gex.get("primeira_pos")        # 1ª barra+
+    """Retorna um dict com as linhas do sinal, SEM emoji e SEM cor — o texto é
+    monocromático como o Striking Bell. Formato: {'veto':bool, 'linhas':[...],
+    'contexto':str}. Cada linha: (acao, nivel, resto). O quadro clean é montado
+    na camada de exibição."""
+    mp = b_gex.get("maior_pos"); mn = b_gex.get("maior_neg")
+    pn = b_gex.get("primeira_neg"); pp = b_gex.get("primeira_pos")
     alta, baixa = _forca_indicadores(b_gex, b_tp, b_fluxo, spot)
     net = comp - vend
 
-    # futuro de execução + stop/take fixo padrão do Striking Bell
     if tk == "QQQ":
-        exec_fut, micro, PTS_FIXO = "NQ", "MNQ", 50      # 50 pontos NQ
+        exec_fut, micro, PTS_FIXO = "NQ", "MNQ", 50
     else:
-        exec_fut, micro, PTS_FIXO = "ES", "MES", 7       # 7 pontos (28 ticks) ES
+        exec_fut, micro, PTS_FIXO = "ES", "MES", 7
 
     if veto_ativo:
-        return (f"**{tk} / {exec_fut}:** operação PROIBIDA agora — o QQQ aponta baixa "
-                f"sem o SPY confirmar. Sem SPY, não entra no {exec_fut}. Fica de fora.")
+        return {"tk": tk, "exec": exec_fut, "veto": True,
+                "linhas": [], "contexto": "",
+                "veto_txt": (f"Operação em {tk} proibida agora — o QQQ aponta baixa "
+                             f"sem o SPY confirmar. Sem a permissão do SPY, não se "
+                             f"entra no {exec_fut}.")}
 
-    # níveis-gatilho: preferir os imãs (muros), como eles fazem (compra no imã de
-    # baixo, vende no imã de cima). Fallback para as primeiras barras.
-    nivel_compra = mn if mn is not None else pn      # imã de baixa = suporte p/ comprar
-    nivel_venda = mp if mp is not None else pp       # imã de alta = resistência p/ vender
-
-    frases = []
+    nivel_compra = mn if mn is not None else pn
+    nivel_venda = mp if mp is not None else pp
+    linhas = []
     if nivel_compra is not None:
-        frases.append(f"🟢 **COMPRAR (LONG)** — quando o **{tk} atingir e se manter em "
-                      f"{nivel_compra:.0f}**. Operar no **{exec_fut}/{micro}** "
-                      f"(stop-loss / take-profit de **{PTS_FIXO} pts {exec_fut}**).")
+        linhas.append(("Comprar", f"{nivel_compra:.0f}",
+                       f"no {exec_fut}/{micro}, stop e alvo de {PTS_FIXO} pontos."))
     if nivel_venda is not None and (nivel_compra is None or nivel_venda != nivel_compra):
-        frases.append(f"🔴 **VENDER (SHORT)** — quando o **{tk} atingir e se manter em "
-                      f"{nivel_venda:.0f}**. Operar no **{exec_fut}/{micro}** "
-                      f"(stop-loss / take-profit de **{PTS_FIXO} pts {exec_fut}**).")
-
-    if not frases:
-        frases.append(f"⚪ **{tk} / {exec_fut}** sem níveis-chave claros agora — "
-                      f"esperar o preço definir os muros antes de armar o sinal.")
+        linhas.append(("Vender", f"{nivel_venda:.0f}",
+                       f"no {exec_fut}/{micro}, stop e alvo de {PTS_FIXO} pontos."))
+    if not linhas:
+        linhas.append(("Aguardar", "—",
+                       f"sem níveis-chave claros no {tk} — esperar o preço definir "
+                       f"os muros antes de entrar."))
 
     if alta > baixa:
-        contexto = f"Viés dos indicadores: **alta** ({alta}/3)."
+        vies = f"alta ({alta}/3 indicadores)"
     elif baixa > alta:
-        contexto = f"Viés dos indicadores: **baixa** ({baixa}/3)."
+        vies = f"baixa ({baixa}/3 indicadores)"
     else:
-        contexto = "Viés dos indicadores: **neutro** (divididos)."
+        vies = "neutro (indicadores divididos)"
     fluxo_txt = ("comprador" if net > 0 else "vendedor") if net != 0 else "neutro"
-    contexto += f" Fluxo agora: **{fluxo_txt}**."
-
-    return "\n\n".join(frases) + "\n\n" + contexto
+    contexto = f"Viés: {vies}. Fluxo agora: {fluxo_txt}."
+    return {"tk": tk, "exec": exec_fut, "veto": False,
+            "linhas": linhas, "contexto": contexto, "veto_txt": ""}
 
 # ----------------------------------------------------------------------------
 # MENTOR DE DISCIPLINA — as 15 regras do operador
@@ -1079,7 +1110,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v3.13</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v4.0</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
@@ -1261,45 +1292,69 @@ with abas[4]:
                "SPY · S5 se evita. PrumoQuant Bell (2.3): em construção — sinal "
                "congelado às 9h29:59 NY e avaliado até 10h00 com MAE/MFE.")
 
-    # --- DIRECIONAMENTO DE ABERTURA (estilo Striking Bell, sem % inventada) ---
+    # --- DIRECIONAMENTO DE ABERTURA — quadro clean, monocromático ---
     dias_sem = ["segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo"]
     dia_txt = f"{dias_sem[agora_ny.weekday()]}, {agora_ny.strftime('%d/%m/%Y')}"
-    estado_mkt = ("🟢 mercado aberto" if (agora_ny.weekday() < 5 and
-                  dtime(9, 30) <= agora_ny.time() < dtime(16, 0))
-                  else ("🟡 pré-mercado" if (agora_ny.weekday() < 5 and
-                        dtime(4, 0) <= agora_ny.time() < dtime(9, 30))
-                        else "🔴 mercado fechado"))
-    st.markdown(
-        f"### 🔔 Direcionamento de Abertura"
-        f"<br><span style='font-size:0.8rem;color:#8b98a5;font-weight:400'>"
-        f"{dia_txt} · {agora_ny.strftime('%H:%M')} NY / {agora_br.strftime('%H:%M')} BR"
-        f" · {estado_mkt}</span>", unsafe_allow_html=True)
-    if estado_mkt == "🔴 mercado fechado":
-        st.caption("⚠️ Mercado FECHADO — os níveis abaixo são do último dado "
-                   "disponível e não refletem movimento ao vivo. Sinal válido só "
-                   "com o mercado aberto.")
+    aberto = (agora_ny.weekday() < 5 and dtime(9, 30) <= agora_ny.time() < dtime(16, 0))
+    pre = (agora_ny.weekday() < 5 and dtime(4, 0) <= agora_ny.time() < dtime(9, 30))
+    estado = "mercado aberto" if aberto else ("pré-mercado" if pre else "mercado fechado")
+    meta = (f"{dia_txt} &nbsp;·&nbsp; {agora_ny.strftime('%H:%M')} NY / "
+            f"{agora_br.strftime('%H:%M')} BR &nbsp;·&nbsp; {estado}")
+
     veto_geral = ("SPY" in dados_ativos and "QQQ" in dados_ativos and
                   dados_ativos["QQQ"]["setup"] and
                   dados_ativos["QQQ"]["setup"]["codigo"] == "S2" and
                   (not dados_ativos["SPY"]["setup"] or
                    dados_ativos["SPY"]["setup"]["codigo"] != "S2"))
-    ordem_dir = [t for t in ("QQQ", "SPY") if t in ativos_ok]  # NQ/QQQ primeiro
+    ordem_dir = [t for t in ("QQQ", "SPY") if t in ativos_ok]
+
+    corpo = ""
     for tk in ordem_dir:
         d = dados_ativos[tk]
         veto_tk = veto_geral and tk == "QQQ"
         _nf, _pf, _rf = razao_futuro(tk, d["spot"])
-        texto = direcionamento_abertura(tk, d["spot"], d["setup"], d["b_gex"],
-                                        d["b_tp"], d["b_fluxo"], d["comp"],
-                                        d["vend"], veto_ativo=veto_tk,
-                                        r_fut=_rf, nome_fut=_nf)
-        import re as _re
-        texto_html = _re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", texto).replace("\n\n", "<br>")
-        st.markdown(f'<div class="setup-linha" style="padding:12px 16px;'
-                    f'font-size:0.92rem;line-height:1.7;">{texto_html}</div>',
-                    unsafe_allow_html=True)
-    st.caption("Leitura condicional de ESTUDO — NÃO é recomendação. Sem % de "
-               "confiança: isso exige histórico de sinais (Fase 2.3). A decisão e "
-               "o risco são do operador.")
+        sig = direcionamento_abertura(tk, d["spot"], d["setup"], d["b_gex"],
+                                      d["b_tp"], d["b_fluxo"], d["comp"], d["vend"],
+                                      veto_ativo=veto_tk, r_fut=_rf, nome_fut=_nf)
+        corpo += f'<div class="sinal-titulo" style="margin-top:14px">{tk} · {sig["exec"]}</div>'
+        if sig["veto"]:
+            corpo += f'<div class="sinal-linha sinal-veto">{sig["veto_txt"]}</div>'
+            continue
+        for acao, nivel, resto in sig["linhas"]:
+            if nivel == "—":
+                corpo += f'<div class="sinal-linha">{resto}</div>'
+            else:
+                corpo += (f'<div class="sinal-linha"><span class="acao">{acao}</span> '
+                          f'quando o {tk} atingir e se manter em '
+                          f'<span class="sinal-nivel">{nivel}</span> — {resto}</div>')
+        corpo += f'<div class="sinal-ctx">{sig["contexto"]}</div>'
+
+    aviso_fechado = ("" if aberto else
+                     '<div class="sinal-nota">Mercado fora do pregão — os níveis são do '
+                     'último dado e não refletem movimento ao vivo.</div>')
+    st.markdown(
+        f'<div class="sinal-box">'
+        f'<div class="sinal-titulo">Direcionamento de abertura</div>'
+        f'<div class="sinal-meta">{meta}</div>'
+        f'{corpo}'
+        f'{aviso_fechado}'
+        f'<div class="sinal-nota">Leitura condicional de estudo — não é recomendação. '
+        f'Sem percentual de confiança (isso exige histórico de sinais, Fase 2.3). '
+        f'A decisão e o risco são do operador.</div>'
+        f'</div>', unsafe_allow_html=True)
+
+    # --- PLACAR DO PRUMOQUANT BELL (acertos / erros / breakeven) ---
+    placar = _bell_placar()
+    st.markdown(
+        f'<div class="sinal-titulo" style="margin-top:16px">PrumoQuant Bell · histórico</div>'
+        f'<div class="placar">'
+        f'<div class="cel"><div class="n verde">{placar["win"]}</div><div class="l">Acertos</div></div>'
+        f'<div class="cel"><div class="n vermelho">{placar["loss"]}</div><div class="l">Erros</div></div>'
+        f'<div class="cel"><div class="n">{placar["be"]}</div><div class="l">Breakeven</div></div>'
+        f'<div class="cel"><div class="n">{placar["taxa"]}</div><div class="l">Taxa de acerto</div></div>'
+        f'</div>'
+        f'<div class="sinal-nota">{placar["nota"]}</div>',
+        unsafe_allow_html=True)
     st.markdown("---")
 
     for tk in ativos_ok:
