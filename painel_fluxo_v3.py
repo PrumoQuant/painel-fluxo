@@ -348,7 +348,7 @@ def historico_yf(ticker):
     except Exception:
         return pd.DataFrame()
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=12, show_spinner=False)
 def buscar_dados(ticker, nvenc=6):
     """Quotes + timesales + cadeia de opções. Retorna dict; erros como texto."""
     if ticker not in WHITELIST:
@@ -698,80 +698,51 @@ def _forca_indicadores(b_gex, b_tp, b_fluxo, spot):
 def direcionamento_abertura(tk, spot, setup, b_gex, b_tp, b_fluxo, comp, vend,
                             veto_ativo=False, r_fut=None, nome_fut=None):
     """Direcionamento no formato EXATO do Striking Bell: lê o nível no SPY/QQQ,
-    manda EXECUTAR no futuro (ES/MES ou NQ/MNQ), com alvo e stop em PONTOS do futuro.
-    Ex.: 'Se o QQQ segurar acima de 725 → COMPRE no NQ, alvo 26.180, stop 50 pts'.
-    Português direto. Honesto: sem % de confiança (exige histórico — Fase 2.3)."""
-    mp = b_gex.get("maior_pos")           # ímã de alta = alvo comprador
-    mn = b_gex.get("maior_neg")           # defesa/ímã de baixa = alvo vendedor
-    pn = b_gex.get("primeira_neg")        # 1ª defesa = gatilho/stop de baixa
-    pp = b_gex.get("primeira_pos")        # 1ª barra+ = gatilho de alta
+    manda EXECUTAR no futuro (NQ/MNQ ou ES/MES) com stop/take em PONTOS FIXOS
+    redondos (como eles: 50 pts NQ, 7 pts ES). Usa 'atingir e se manter' (hold).
+    Honesto: sem % de confiança (exige histórico — Fase 2.3)."""
+    mp = b_gex.get("maior_pos")           # ímã de alta
+    mn = b_gex.get("maior_neg")           # ímã/defesa de baixa
+    pn = b_gex.get("primeira_neg")        # 1ª defesa
+    pp = b_gex.get("primeira_pos")        # 1ª barra+
     alta, baixa = _forca_indicadores(b_gex, b_tp, b_fluxo, spot)
     net = comp - vend
 
-    # micro-futuro (o que day-trader usa): NQ→MNQ, ES→MES
-    exec_fut = "NQ" if tk == "QQQ" else "ES"
-    micro = "MNQ" if tk == "QQQ" else "MES"
-
-    def para_fut(nivel):
-        """Converte um nível do ETF para o preço equivalente no futuro."""
-        if nivel is None or not r_fut:
-            return None
-        return nivel * r_fut
-
-    def pts(n_etf_ini, n_etf_fim):
-        """Distância em PONTOS do futuro entre dois níveis do ETF."""
-        a, b = para_fut(n_etf_ini), para_fut(n_etf_fim)
-        if a is None or b is None:
-            return None
-        return abs(b - a)
+    # futuro de execução + stop/take fixo padrão do Striking Bell
+    if tk == "QQQ":
+        exec_fut, micro, PTS_FIXO = "NQ", "MNQ", 50      # 50 pontos NQ
+    else:
+        exec_fut, micro, PTS_FIXO = "ES", "MES", 7       # 7 pontos (28 ticks) ES
 
     if veto_ativo:
         return (f"**{tk} / {exec_fut}:** operação PROIBIDA agora — o QQQ aponta baixa "
                 f"sem o SPY confirmar. Sem SPY, não entra no {exec_fut}. Fica de fora.")
 
-    gatilho_alta = pp if (pp is not None and pp >= spot) else None
-    gatilho_baixa = pn if (pn is not None and pn <= spot) else None
+    # níveis-gatilho: preferir os imãs (muros), como eles fazem (compra no imã de
+    # baixo, vende no imã de cima). Fallback para as primeiras barras.
+    nivel_compra = mn if mn is not None else pn      # imã de baixa = suporte p/ comprar
+    nivel_venda = mp if mp is not None else pp       # imã de alta = resistência p/ vender
 
     frases = []
-    # --- cenário comprador (executa no futuro) ---
-    if gatilho_alta is not None and mp is not None and mp > gatilho_alta:
-        alvo_fut = para_fut(mp)
-        d_pts = pts(gatilho_alta, mp)
-        alvo_txt = f"{alvo_fut:,.0f}".replace(",", ".") if alvo_fut else f"{mp:.0f}"
-        pts_txt = f" (~{d_pts:.0f} pts {exec_fut})" if d_pts else ""
-        frases.append(f"🟢 Se o **{tk} segurar acima de {gatilho_alta:.0f}** → "
-                      f"COMPRE no **{exec_fut}/{micro}**, alvo **{alvo_txt}**{pts_txt}. "
-                      f"Stop se o {tk} perder {gatilho_alta:.0f}.")
-    elif mp is not None and mp > spot:
-        alvo_fut = para_fut(mp)
-        alvo_txt = f"{alvo_fut:,.0f}".replace(",", ".") if alvo_fut else f"{mp:.0f}"
-        frases.append(f"🟢 Ímã de alta no {tk} em **{mp:.0f}** (≈ {alvo_txt} no "
-                      f"{exec_fut}). Comprar só no rompimento com força.")
-    # --- cenário vendedor (executa no futuro) ---
-    if gatilho_baixa is not None and mn is not None and mn < gatilho_baixa:
-        alvo_fut = para_fut(mn)
-        d_pts = pts(gatilho_baixa, mn)
-        alvo_txt = f"{alvo_fut:,.0f}".replace(",", ".") if alvo_fut else f"{mn:.0f}"
-        pts_txt = f" (~{d_pts:.0f} pts {exec_fut})" if d_pts else ""
-        frases.append(f"🔴 Se o **{tk} perder {gatilho_baixa:.0f}** → "
-                      f"VENDA no **{exec_fut}/{micro}**, alvo **{alvo_txt}**{pts_txt}. "
-                      f"Stop se voltar acima de {gatilho_baixa:.0f}.")
-    elif mn is not None and mn < spot:
-        alvo_fut = para_fut(mn)
-        alvo_txt = f"{alvo_fut:,.0f}".replace(",", ".") if alvo_fut else f"{mn:.0f}"
-        frases.append(f"🔴 Defesa no {tk} em **{mn:.0f}** (≈ {alvo_txt} no {exec_fut}) — "
-                      f"alvo vendedor se perder os níveis acima.")
+    if nivel_compra is not None:
+        frases.append(f"🟢 **COMPRAR (LONG)** — quando o **{tk} atingir e se manter em "
+                      f"{nivel_compra:.0f}**. Operar no **{exec_fut}/{micro}** "
+                      f"(stop-loss / take-profit de **{PTS_FIXO} pts {exec_fut}**).")
+    if nivel_venda is not None and (nivel_compra is None or nivel_venda != nivel_compra):
+        frases.append(f"🔴 **VENDER (SHORT)** — quando o **{tk} atingir e se manter em "
+                      f"{nivel_venda:.0f}**. Operar no **{exec_fut}/{micro}** "
+                      f"(stop-loss / take-profit de **{PTS_FIXO} pts {exec_fut}**).")
 
     if not frases:
-        frases.append(f"⚪ **{tk} / {exec_fut}** sem gatilho claro agora — esperar o "
-                      f"preço chegar numa barra-chave antes de entrar.")
+        frases.append(f"⚪ **{tk} / {exec_fut}** sem níveis-chave claros agora — "
+                      f"esperar o preço definir os muros antes de armar o sinal.")
 
     if alta > baixa:
-        contexto = f"Indicadores pendem para **alta** ({alta}/3)."
+        contexto = f"Viés dos indicadores: **alta** ({alta}/3)."
     elif baixa > alta:
-        contexto = f"Indicadores pendem para **baixa** ({baixa}/3)."
+        contexto = f"Viés dos indicadores: **baixa** ({baixa}/3)."
     else:
-        contexto = "Indicadores **divididos** — sinal fraco, cautela redobrada."
+        contexto = "Viés dos indicadores: **neutro** (divididos)."
     fluxo_txt = ("comprador" if net > 0 else "vendedor") if net != 0 else "neutro"
     contexto += f" Fluxo agora: **{fluxo_txt}**."
 
@@ -1043,8 +1014,20 @@ def cartao_html(rotulo, valor, sub=""):
 # ----------------------------------------------------------------------------
 agora_ny = datetime.now(ZoneInfo("America/New_York"))
 agora_br = datetime.now(ZoneInfo("America/Sao_Paulo"))
-janela_quente = (agora_ny.time() >= dtime(9, 0)) and (agora_ny.time() <= dtime(9, 45))
-st_autorefresh(interval=30000 if janela_quente else 60000, key="pq_refresh")
+agora_t = agora_ny.time()
+# Três ritmos de atualização (NY):
+#  - MIOLO da abertura (9h29–9h35): 15s — muros mudam rápido, sinal precisa ser fresco
+#  - Janela quente (9h00–9h45): 30s
+#  - Resto do pregão: 60s
+miolo_abertura = dtime(9, 29) <= agora_t <= dtime(9, 35)
+janela_quente = dtime(9, 0) <= agora_t <= dtime(9, 45)
+if miolo_abertura:
+    intervalo_ms = 15000
+elif janela_quente:
+    intervalo_ms = 30000
+else:
+    intervalo_ms = 60000
+st_autorefresh(interval=intervalo_ms, key="pq_refresh")
 
 tickers_para_rodar = ["SPY", "QQQ"] if MODO_VISAO == "SPY + QQQ lado a lado" else [TICKER_UNICO]
 r_global = taxa_juros_automatica() if USAR_R_AUTO else TAXA_MANUAL
@@ -1096,13 +1079,13 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v3.10</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v3.12</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
         {selo_mercado(agora_ny)}<br>
         <b>NY:</b> {agora_ny.strftime('%H:%M:%S')} · <b>BR:</b> {agora_br.strftime('%H:%M')} ·
-        r: {r_global*100:.2f}% ({origem_r})<br>
+        r: {r_global*100:.2f}% ({origem_r}) · ⏱ {intervalo_ms//1000}s<br>
         <span style='color:{cor_fonte}'>{fonte_geral}</span>
     </div>
 </div>
