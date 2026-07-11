@@ -1110,7 +1110,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v4.3</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v4.4</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
@@ -1148,7 +1148,7 @@ if "SPY" in dados_ativos and "QQQ" in dados_ativos:
                     unsafe_allow_html=True)
 
 # --- Abas ---------------------------------------------------------------------
-nomes_abas = ["Abertura", "Delta-Hedging", "Fluxo", "Time Pressure",
+nomes_abas = ["Delta-Hedging", "Fluxo", "Time Pressure", "Abertura",
               "SPY×QQQ", "Níveis"]
 if MOSTRAR_TV:
     nomes_abas.append("Gráfico TV")
@@ -1212,31 +1212,10 @@ with abas[0]:
                     st.markdown(md)
                 else:
                     st.caption("Razão do futuro indisponível no momento.")
-
-        if MOSTRAR_VWAP and d["hist"] is not None and not d["hist"].empty:
-            with st.expander(f"Preço × VWAP ({tk})"):
-                figv = grafico_vwap(d["hist"], MODO_BANDAS, BANDAS_VWAP.get(tk, []))
-                st.plotly_chart(figv, use_container_width=True, key=f"vwap_{tk}",
-                                config={"displayModeBar": False})
         st.markdown("---")
 
-# ============================== ABA 2 · DELTA-HEDGING ==========================
+# ============================== ABA · FLUXO ===================================
 with abas[1]:
-    st.caption("Barras de gamma = defesa dos market makers. Positivas = guard-rails "
-               "(estabiliza); negativas = gasolina no fogo (acelera). Escala: "
-               "dollar-gamma pleno (Γ·OI·100·S²), escala em bilhões como no terminal de referência.")
-    for tk in ativos_ok:
-        d = dados_ativos[tk]
-        painel_quantico("Delta Hedging Q", tk, d["spot"], d["por_strike"], "gex",
-                        d["b_gex"], key=f"dh_{tk}", altura=420, faixa=0.05,
-                        horizontal=MODO_CELULAR)
-        st.caption(f"Gamma flip: {fx(d['flip'], nd=1)} · Call Wall: {fx(d['cw'], nd=1)} · "
-                   f"Put Wall: {fx(d['pw'], nd=1)}")
-        st.markdown(tabela_barras_md(d["b_gex"]))
-        st.markdown("---")
-
-# ============================== ABA 3 · FLUXO ==================================
-with abas[2]:
     st.caption("Volume Imbalance Flow: prêmio agressor por strike. Verde (direita) = "
                "calls compradas / puts vendidas; vermelho (esquerda) = puts compradas / "
                "calls vendidas. Linhas: branca = spot · azul = ímã (maior+) · roxa = muros.")
@@ -1260,7 +1239,7 @@ with abas[2]:
         st.markdown("---")
 
 # ============================== ABA 4 · TIME PRESSURE ==========================
-with abas[3]:
+with abas[2]:
     st.caption("Time Pressure (item 1.8, v1): decaimento do delta (charm) forçando o "
                "hedge dos dealers. Positivo = decadência magnetiza para CIMA; negativo = "
                "para BAIXO; picos = alívio → sinal de pullback. Semântica em validação "
@@ -1274,7 +1253,7 @@ with abas[3]:
         st.markdown("---")
 
 # ============================== ABA 5 · SETUPS =================================
-with abas[0]:
+with abas[3]:
     st.caption("S6 é o mais assertivo · S2 é o mais perigoso e EXIGE confirmação do "
                "SPY · S5 se evita. PrumoQuant Bell (2.3): em construção — sinal "
                "congelado às 9h29:59 NY e avaliado até 10h00 com MAE/MFE.")
