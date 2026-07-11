@@ -1410,7 +1410,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v4.9</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v5.0</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
@@ -1689,6 +1689,23 @@ with abas[4]:
                "penúltima/última banda + ATR do dia consumido. O selo de risco vem do NET "
                "direcional do momento. As marcas do dia não se apagam e são avaliadas no "
                "fechamento. Ferramenta de ESTUDO — não é recomendação.")
+
+    # Aplicação dupla das zonas PS: mesma zona serve a dois instrumentos.
+    st.markdown(
+        '<div class="setup-linha" style="border-color:var(--accent)">'
+        '<b>Zonas PS = zonas extremas de reversão.</b> A mesma leitura serve a dois usos: '
+        '(1) <b>trava de crédito</b> (vender prêmio contra a continuação — tese "não passa daqui"); '
+        '(2) <b>scalping profundo</b> (entrar na reversão — comprado no fundo, vendido no teto — '
+        'com stop curto). A zona é a mesma; muda o instrumento. O selo de risco vale para os dois: '
+        'risco alto = reversão menos provável, cuidado nos dois usos.</div>',
+        unsafe_allow_html=True)
+
+    # Aviso de foco: para o PS de SPX, o SPY precisa estar carregado.
+    if "SPY" not in dados_ativos:
+        st.markdown(
+            '<div class="setup-linha alerta-vermelho">Para o PS de <b>SPX</b>, ative o '
+            '<b>SPY</b> na barra lateral (modo "SPY + QQQ lado a lado", ou "Um ativo" = SPY). '
+            'O PS lê o SPY e converte ×10 para o SPX.</div>', unsafe_allow_html=True)
 
     _RISCO_COR = {"confiavel": "var(--up)", "atencao": "var(--accent)",
                   "arriscada": "var(--down)", "vetada": "var(--ink-3)"}
