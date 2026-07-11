@@ -230,6 +230,129 @@ API_BASE = "https://api.tradier.com/v1"
 WHITELIST = {"SPY", "QQQ"}   # trava de segurança §2.1 — nunca ampliar sem dupla confirmação
 
 # ----------------------------------------------------------------------------
+# PERSISTÊNCIA — SUPABASE (Fase 2.3) — registro de sinais para histórico/acerto
+# ----------------------------------------------------------------------------
+# Credenciais SÓ nos Secrets do Streamlit (SUPABASE_URL, SUPABASE_KEY), como o
+# token Tradier. REGRA DE OURO: se não houver credenciais, TUDO cai no
+# session_state (comportamento anterior). O painel NUNCA depende do banco.
+import json as _json
+
+def _supabase_creds():
+    try:
+        url = str(st.secrets.get("SUPABASE_URL", "") or "").strip()
+        key = str(st.secrets.get("SUPABASE_KEY", "") or "").strip()
+    except Exception:
+        url = os.environ.get("SUPABASE_URL", "").strip()
+        key = os.environ.get("SUPABASE_KEY", "").strip()
+    return (url, key) if (url and key) else (None, None)
+
+def supabase_ativo():
+    url, key = _supabase_creds()
+    return bool(url and key)
+
+def _sb_headers(key):
+    return {"apikey": key, "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json", "Prefer": "return=representation"}
+
+def supabase_insert(tabela, linha):
+    """Insere uma linha. Retorna (ok, erro). Nunca levanta exceção para a UI."""
+    url, key = _supabase_creds()
+    if not url:
+        return False, "sem credenciais"
+    try:
+        r = requests.post(f"{url}/rest/v1/{tabela}", headers=_sb_headers(key),
+                          data=_json.dumps(linha), timeout=8)
+        if r.status_code in (200, 201):
+            return True, None
+        return False, f"HTTP {r.status_code}"
+    except Exception as e:
+        return False, f"falha de rede: {e}"
+
+def supabase_select(tabela, filtro=""):
+    """Lê linhas (filtro PostgREST opcional). Retorna (lista, erro)."""
+    url, key = _supabase_creds()
+    if not url:
+        return [], "sem credenciais"
+    try:
+        r = requests.get(f"{url}/rest/v1/{tabela}{filtro}",
+                         headers=_sb_headers(key), timeout=8)
+        if r.status_code == 200:
+            return r.json(), None
+        return [], f"HTTP {r.status_code}"
+    except Exception as e:
+        return [], f"falha de rede: {e}"
+
+def supabase_update(tabela, id_col, id_val, campos):
+    """Atualiza uma linha por id (ex: gravar resultado no fechamento)."""
+    url, key = _supabase_creds()
+    if not url:
+        return False, "sem credenciais"
+    try:
+        r = requests.patch(f"{url}/rest/v1/{tabela}?{id_col}=eq.{id_val}",
+                           headers=_sb_headers(key), data=_json.dumps(campos), timeout=8)
+        return (r.status_code in (200, 204)), None
+    except Exception as e:
+        return False, f"falha de rede: {e}"
+
+def _stats_do_historico(linhas):
+    """Placar (win/loss/be/taxa) a partir de linhas com campo 'resultado'."""
+    win = sum(1 for r in linhas if r.get("resultado") == "WIN")
+    loss = sum(1 for r in linhas if r.get("resultado") == "LOSS")
+    be = sum(1 for r in linhas if r.get("resultado") == "BE")
+    dec = win + loss
+    taxa = f"{100*win/dec:.0f}%" if dec else "—"
+    return {"win": win, "loss": loss, "be": be, "taxa": taxa,
+            "total": len(linhas), "avaliados": dec}
+
+def ps_marca_ja_registrada(tk, lado, dia):
+    """Evita gravar a mesma marca (tk/lado/dia) duas vezes — usa flag na sessão."""
+    chave = f"ps_reg_{tk}_{lado}_{dia}"
+    if st.session_state.get(chave):
+        return True
+    st.session_state[chave] = True
+    return False
+
+def registrar_ps_marca_banco(tk, ps, hora_ny, dia_iso, nivel_spx):
+    """Grava uma marca PS no Supabase (uma vez por tk/lado/dia). Silencioso se
+    o banco não estiver configurado — o session_state continua sendo a verdade
+    da sessão. O banco é o histórico ENTRE dias."""
+    if not supabase_ativo() or ps is None or not ps.get("acende"):
+        return
+    if ps_marca_ja_registrada(tk, ps["lado"], dia_iso):
+        return
+    supabase_insert("ps_marcas", {
+        "dia": dia_iso, "hora_ny": hora_ny, "tk": tk, "lado": ps["lado"],
+        "nivel": round(float(ps["nivel"]), 2),
+        "nivel_spx": round(float(nivel_spx), 1) if nivel_spx else None,
+        "forca": ps["forca_txt"], "risco": ps["risco"],
+        "net_dir": round(float(ps.get("net_dir", 0)), 0), "resultado": None})
+
+def registrar_bell_sinal_banco(tk, sig, dia_iso, hora_ny):
+    """Grava o sinal de abertura no Supabase, UMA vez por tk/dia, quando o sinal
+    é congelado (na janela de abertura). Silencioso se o banco não existir."""
+    if not supabase_ativo() or not sig or sig.get("veto"):
+        return
+    chave = f"bell_reg_{tk}_{dia_iso}"
+    if st.session_state.get(chave):
+        return
+    st.session_state[chave] = True
+    vd = sig.get("vies_dir") or {}
+    g_compra = g_venda = None
+    for acao, nivel, _ in sig.get("linhas", []):
+        if nivel and nivel != "—":
+            try:
+                if acao == "Comprar":
+                    g_compra = float(nivel)
+                elif acao == "Vender":
+                    g_venda = float(nivel)
+            except ValueError:
+                pass
+    supabase_insert("bell_sinais", {
+        "dia": dia_iso, "hora_ny": hora_ny, "tk": tk,
+        "direcao": vd.get("direcao"), "votos": vd.get("votos"),
+        "gatilho_compra": g_compra, "gatilho_venda": g_venda, "resultado": None})
+
+# ----------------------------------------------------------------------------
 # BARRA LATERAL
 # ----------------------------------------------------------------------------
 st.sidebar.title("Configurações")
@@ -299,6 +422,10 @@ if TRADIER_TOKEN:
     st.sidebar.caption("🔐 Token Tradier: carregado via Secrets.")
 else:
     st.sidebar.caption("⚠️ Token Tradier AUSENTE — configure em Settings → Secrets.")
+if supabase_ativo():
+    st.sidebar.caption("🗄️ Registro Supabase: ativo (histórico persistente).")
+else:
+    st.sidebar.caption("🗄️ Registro Supabase: desligado (sem histórico entre dias).")
 st.sidebar.caption("Ferramenta de ESTUDO. Painel SOMENTE LEITURA — nenhuma ordem é enviada.")
 
 # ----------------------------------------------------------------------------
@@ -751,26 +878,40 @@ def detectar_setup(barras, spot, flip, dominio, cw, pw):
 
 
 def _bell_placar():
-    """Placar do PrumoQuant Bell (acertos/erros/breakeven). Enquanto o registro
-    de sinais (Fase 2.3) não estiver ligado, mostra zeros e explica — NÃO inventa
-    números. Quando o histórico existir, esta função lê dele."""
-    try:
-        registros = st.session_state.get("bell_registros", [])
-    except Exception:
-        registros = []
+    """Placar do PrumoQuant Bell (acertos/erros/breakeven). Lê do Supabase se
+    configurado (histórico entre dias); senão, do session_state. NÃO inventa
+    números — mostra zeros e explica enquanto não houver dados."""
+    fonte_banco = False
+    registros = []
+    if supabase_ativo():
+        linhas, err = supabase_select("bell_sinais", "?select=resultado")
+        if not err:
+            registros = linhas
+            fonte_banco = True
+    if not fonte_banco:
+        try:
+            registros = st.session_state.get("bell_registros", [])
+        except Exception:
+            registros = []
     win = sum(1 for r in registros if r.get("resultado") == "WIN")
     loss = sum(1 for r in registros if r.get("resultado") == "LOSS")
     be = sum(1 for r in registros if r.get("resultado") == "BE")
     total_dec = win + loss
     taxa = f"{100*win/total_dec:.0f}%" if total_dec else "—"
     if not registros:
-        nota = ("Ainda sem sinais registrados. O placar começa a contar quando o "
-                "registro automático do Bell for ativado (Fase 2.3): cada sinal é "
-                "congelado às 9h29:59 NY e avaliado até 10h00. Registramos TODOS "
-                "os sinais, inclusive os que não deram certo.")
+        if supabase_ativo():
+            nota = ("Banco conectado, ainda sem sinais gravados. O primeiro sinal é "
+                    "congelado na próxima abertura (09:30 NY) e aparece aqui. A "
+                    "avaliação de acerto (até 10h) entra no fechamento — registramos "
+                    "TODOS os sinais, inclusive os que não deram certo.")
+        else:
+            nota = ("Registro persistente não configurado (SUPABASE_URL/KEY nos "
+                    "Secrets). Sem isso o placar zera ao recarregar. Com o banco, o "
+                    "sinal é congelado às 09:30 NY e avaliado até 10h00.")
     else:
-        nota = (f"{total_dec} sinais avaliados · {be} no zero a zero. Taxa considera "
-                f"só os que fecharam com resultado (exclui breakeven).")
+        origem = "banco" if fonte_banco else "sessão"
+        nota = (f"{total_dec} sinais avaliados · {be} no zero a zero (origem: {origem}). "
+                f"Taxa considera só os que fecharam com resultado (exclui breakeven).")
     return {"win": win, "loss": loss, "be": be, "taxa": taxa, "nota": nota}
 
 
@@ -1391,6 +1532,14 @@ for tk in tickers_para_rodar:
     ps_registrar_marca(tk, ps_teto, spot, _hora_ny)
     ps_registrar_marca(tk, ps_fundo, spot, _hora_ny)
     ps_atualizar_extremos(tk, spot)
+    # Persistência entre dias (Fase 2.3): grava a marca no Supabase (silencioso
+    # se o banco não estiver configurado). ×10 para o nível SPX quando é SPY.
+    _dia_iso = agora_ny.strftime("%Y-%m-%d")
+    _fx_spx = (lambda v: v * 10.0) if tk == "SPY" else (lambda v: v)
+    if ps_teto and ps_teto.get("acende"):
+        registrar_ps_marca_banco(tk, ps_teto, _hora_ny, _dia_iso, _fx_spx(ps_teto["nivel"]))
+    if ps_fundo and ps_fundo.get("acende"):
+        registrar_ps_marca_banco(tk, ps_fundo, _hora_ny, _dia_iso, _fx_spx(ps_fundo["nivel"]))
 
     dados_ativos[tk] = dict(spot=spot, prev=bruto["prev"], hist=hist, venc=venc,
                             fonte=bruto["fonte"], por_strike=por_strike, cw=cw,
@@ -1410,7 +1559,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v5.0</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v5.1</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
@@ -1586,6 +1735,11 @@ with abas[3]:
         sig = direcionamento_abertura(tk, d["spot"], d["setup"], d["b_gex"],
                                       d["b_tp"], d["b_fluxo"], d["comp"], d["vend"],
                                       veto_ativo=veto_tk, r_fut=_rf, nome_fut=_nf)
+        # Registro persistente do Bell (Fase 2.3): congela o sinal no banco na
+        # abertura (uma vez por dia). Silencioso se o banco não estiver ligado.
+        if janela["fase"] == "ativo":
+            registrar_bell_sinal_banco(tk, sig, agora_ny.strftime("%Y-%m-%d"),
+                                       agora_ny.strftime("%H:%M"))
         corpo += f'<div class="sinal-titulo" style="margin-top:14px">{tk} · {sig["exec"]}</div>'
         if sig["veto"]:
             corpo += f'<div class="sinal-linha sinal-veto">{sig["veto_txt"]}</div>'
@@ -1792,6 +1946,32 @@ with abas[4]:
         _bloco_ps_ativo(tk)
     if not any(t in dados_ativos for t in ("SPY", "QQQ")):
         st.info("Sem dados de SPY/QQQ no momento para calcular o PS.")
+
+    # --- HISTÓRICO PERSISTENTE DO PS (Supabase · Fase 2.3) ---
+    st.markdown('<div class="sinal-titulo" style="margin-top:18px">'
+                'PS · histórico persistente (entre dias)</div>', unsafe_allow_html=True)
+    if supabase_ativo():
+        linhas_ps, err_ps = supabase_select("ps_marcas", "?select=resultado,lado")
+        if err_ps:
+            st.caption("Banco configurado, mas a leitura falhou agora (%s). O painel "
+                       "segue normal; as marcas do dia estão acima." % err_ps)
+        else:
+            sp = _stats_do_historico(linhas_ps)
+            st.markdown(
+                '<div class="placar">'
+                '<div class="cel"><div class="n verde">%d</div><div class="l">Segurou</div></div>'
+                '<div class="cel"><div class="n vermelho">%d</div><div class="l">Furou</div></div>'
+                '<div class="cel"><div class="n">%d</div><div class="l">Total marcas</div></div>'
+                '<div class="cel"><div class="n">%s</div><div class="l">Taxa de acerto</div></div>'
+                '</div>' % (sp["win"], sp["loss"], sp["total"], sp["taxa"]),
+                unsafe_allow_html=True)
+            st.caption("Acumulado de todas as marcas PS gravadas no banco, dia após dia. "
+                       "A avaliação de acerto/erro é feita no fechamento de cada dia.")
+    else:
+        st.caption("Registro persistente não configurado. Para o PS acumular histórico "
+                   "entre dias (e não zerar ao recarregar), adicione SUPABASE_URL e "
+                   "SUPABASE_KEY nos Secrets do Streamlit. Sem isso, o painel funciona "
+                   "igual; só não guarda histórico entre sessões.")
 
 # ============================== ABA · SPY×QQQ ================================
 with abas[5]:
