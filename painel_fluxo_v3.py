@@ -262,6 +262,18 @@ NVENC_UI = st.sidebar.slider(
          "Suba se a magnitude do SPY ficar baixa; desça se o carregamento pesar.")
 PESO_PONDERADO = MODO_AGREGACAO.startswith("Ponderado")
 
+st.sidebar.markdown("---")
+st.sidebar.caption("PS · Pad Special (trava de crédito)")
+st.sidebar.caption("Limiares de NET (fluxo agressor) que graduam o risco da parede. "
+                   "Ajuste ao vivo contra a Quantico.")
+PS_NET_CONF = st.sidebar.slider("NET confiável até (M)", 0.5, 3.0, 1.5, 0.1,
+    help="Abaixo disso a parede banca a reversão — trava de crédito tranquila.")
+PS_NET_ATEN = st.sidebar.slider("NET atenção até (M)", 1.0, 4.0, 2.5, 0.1,
+    help="Pressão média sobre a parede.")
+PS_NET_FORT = st.sidebar.slider("NET forte até (M)", 2.0, 8.0, 4.0, 0.1,
+    help="Forte: pode furar ou colar no teto/fundo (foi a sexta). Acima disso, vetada.")
+PS_THRESHOLDS = (PS_NET_CONF * 1e6, PS_NET_ATEN * 1e6, PS_NET_FORT * 1e6)
+
 with st.sidebar.expander("Preferências de exibição"):
     MOSTRAR_VWAP = st.checkbox("Gráfico Preço × VWAP (com bandas)", value=True)
     MODO_BANDAS = st.selectbox("Modo das bandas VWAP",
@@ -494,6 +506,30 @@ def razao_futuro(ticker, spot_etf):
         return nome, preco_fut, preco_fut / spot_etf
     except Exception:
         return None, None, None
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def atr_diario_ref(ticker):
+    """ATR(14) e fechamento do dia ANTERIOR (D-1), congelados — a régua do PS.
+    Wilder RMA de 14 períodos sobre o True Range diário. Retorna
+    (atr_ref, close_ancora) no espaço do próprio ETF (SPY/QQQ). Cache de 1h:
+    o valor só muda quando vira o dia. Fallback silencioso → (None, None)."""
+    try:
+        h = yf.Ticker(ticker).history(period="40d", interval="1d", prepost=False)
+        if h is None or h.empty or len(h) < 16:
+            return None, None
+        hi, lo, cl = h["High"], h["Low"], h["Close"]
+        prev_close = cl.shift(1)
+        tr = pd.concat([(hi - lo).abs(),
+                        (hi - prev_close).abs(),
+                        (lo - prev_close).abs()], axis=1).max(axis=1)
+        # Wilder RMA(14) = EMA com alpha 1/14
+        atr = tr.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+        # D-1 = penúltima linha (a última é o dia corrente/mais recente)
+        atr_ref = float(atr.iloc[-2]) if pd.notna(atr.iloc[-2]) else None
+        close_ancora = float(cl.iloc[-2]) if pd.notna(cl.iloc[-2]) else None
+        return atr_ref, close_ancora
+    except Exception:
+        return None, None
 
 # ----------------------------------------------------------------------------
 # ANÁLISES: VWAP · GEX · TIME PRESSURE · FLUXO · BARRAS-CHAVE · SETUPS
@@ -801,6 +837,128 @@ def estado_janela_abertura(agora_ny):
             "nota": ("Mercado fechado. O Direcionamento de Abertura será congelado "
                      "na próxima abertura, 09:30 NY (10:30 BR)."),
             "countdown": _proxima_abertura_txt(agora_ny)}
+
+
+# ----------------------------------------------------------------------------
+# PS (PAD SPECIAL) — régua de exaustão para trava de crédito vertical (SPX)
+# ----------------------------------------------------------------------------
+# Duas trilhas por dia: PS Mínima (Put Credit Special, fundo) e PS Máxima
+# (Call Credit Special, teto). Obrigatórios: preço testando a parede de Delta
+# Hedging + risco de NET não-vetado. Bônus: VWAP na penúltima/última banda e ATR
+# do dia consumido. O selo de risco vem do NET DIRECIONAL (limiares do operador).
+# Marcas do dia não se apagam; guarda a melhor mínima e a melhor máxima; avalia
+# acerto no fim do dia (definição A: segurou até o fechamento, tolerância ~0,1%).
+PS_TOL_PAREDE = 0.0015   # 0,15% = "preço encostado na parede"
+PS_TOL_ACERTO = 0.0010   # 0,10% = furo tolerado que ainda conta como acerto
+
+
+def ps_selo_risco(net_dir, lado, thresholds):
+    """Classifica o risco da PS pelo NET DIRECIONAL do momento.
+    net_dir: NET com sinal (+ comprador líquido, − vendedor líquido).
+    lado: 'teto' (Call Credit) ou 'fundo' (Put Credit).
+    A pressão que importa é a que empurra CONTRA a trava (na direção da
+    continuação): no teto, fluxo comprador; no fundo, fluxo vendedor."""
+    t_conf, t_aten, t_forte = thresholds
+    pressao = max(net_dir, 0.0) if lado == "teto" else max(-net_dir, 0.0)
+    if pressao <= t_conf:
+        return "confiavel", "confiável"
+    if pressao <= t_aten:
+        return "atencao", "atenção"
+    if pressao <= t_forte:
+        return "arriscada", "arriscada — pode furar ou colar"
+    return "vetada", "vetada — rompimento provável"
+
+
+def ps_vwap_banda(spot, vwap, sigma, lado):
+    """Quantas bandas (σ) o preço está esticado na direção do lado. Bônus ≥ 2σ."""
+    if vwap is None or sigma is None or sigma <= 0:
+        return 0.0
+    d = (spot - vwap) / sigma if lado == "teto" else (vwap - spot) / sigma
+    return max(d, 0.0)
+
+
+def ps_atr_consumido(spot, ancora_close, atr_ref, lado):
+    """Fração do ATR do dia já consumida na direção do lado.
+    ancora_close = fechamento de D-1; atr_ref = ATR(14) congelado de D-1."""
+    if not atr_ref or atr_ref <= 0 or ancora_close is None:
+        return 0.0
+    if lado == "teto":
+        return max(spot - ancora_close, 0.0) / atr_ref
+    return max(ancora_close - spot, 0.0) / atr_ref
+
+
+def avaliar_ps(lado, nivel, extremo_pos_marca):
+    """Definição A de acerto. Teto: acertou se o preço não superou nivel*(1+TOL)
+    desde a marca. Fundo: não perdeu nivel*(1−TOL). extremo_pos_marca = maior alta
+    (teto) ou menor baixa (fundo) observada APÓS a marca. → 'WIN'|'LOSS'|'ABERTO'."""
+    if extremo_pos_marca is None:
+        return "ABERTO"
+    if lado == "teto":
+        return "LOSS" if extremo_pos_marca > nivel * (1 + PS_TOL_ACERTO) else "WIN"
+    return "LOSS" if extremo_pos_marca < nivel * (1 - PS_TOL_ACERTO) else "WIN"
+
+
+def detectar_ps(lado, spot, b_gex, vwap, sigma, net_dir,
+                ancora_close, atr_ref, thresholds):
+    """Detecta candidata PS no lado ('teto'/'fundo'). Obrigatórios: (1) parede de
+    Delta Hedging na direção com preço encostado (±PS_TOL_PAREDE); (2) NET não
+    'vetado'. Bônus: VWAP ≥ 2σ; ATR consumido ≥ 0,70. Retorna dict ou None."""
+    parede = b_gex.get("maior_pos") if lado == "teto" else b_gex.get("maior_neg")
+    if parede is None or abs(spot - parede) / spot > PS_TOL_PAREDE:
+        return None
+    nivel_risco, txt_risco = ps_selo_risco(net_dir, lado, thresholds)
+    if nivel_risco == "vetada":
+        return {"lado": lado, "nivel": parede, "acende": False,
+                "risco": nivel_risco, "risco_txt": txt_risco,
+                "forca": 0, "forca_txt": "vetada", "bonus": [], "net_dir": net_dir}
+    bandas = ps_vwap_banda(spot, vwap, sigma, lado)
+    atr_frac = ps_atr_consumido(spot, ancora_close, atr_ref, lado)
+    bonus = []
+    if bandas >= 2.0:
+        bonus.append("VWAP %.1fσ" % bandas)
+    if atr_frac >= 0.70:
+        bonus.append("ATR %.0f%%" % (atr_frac * 100))
+    forca = 2 + len(bonus)
+    forca_txt = {2: "base", 3: "moderado", 4: "forte"}.get(forca, "base")
+    return {"lado": lado, "nivel": parede, "acende": True,
+            "risco": nivel_risco, "risco_txt": txt_risco,
+            "forca": forca, "forca_txt": forca_txt, "bonus": bonus,
+            "bandas": bandas, "atr_frac": atr_frac, "net_dir": net_dir}
+
+
+def ps_registrar_marca(tk, ps, spot, hora_ny):
+    """Guarda/atualiza a melhor marca do dia por lado (não apaga a anterior).
+    'Melhor' = mais extrema (maior nível no teto, menor no fundo). As marcas ficam
+    em session_state['ps_marcas'][tk][lado]. Guarda também o extremo do preço
+    observado após a marca, para a avaliação de acerto no fim do dia."""
+    if ps is None or not ps.get("acende"):
+        return
+    raiz = st.session_state.setdefault("ps_marcas", {})
+    porativo = raiz.setdefault(tk, {})
+    lado = ps["lado"]
+    atual = porativo.get(lado)
+    nova = (atual is None or
+            (lado == "teto" and ps["nivel"] > atual["nivel"]) or
+            (lado == "fundo" and ps["nivel"] < atual["nivel"]))
+    if nova:
+        porativo[lado] = {"nivel": ps["nivel"], "hora": hora_ny,
+                          "forca_txt": ps["forca_txt"], "risco": ps["risco"],
+                          "risco_txt": ps["risco_txt"], "bonus": list(ps["bonus"]),
+                          "net_dir": ps["net_dir"], "extremo": spot}
+
+
+def ps_atualizar_extremos(tk, spot):
+    """A cada refresh, atualiza o extremo do preço após cada marca (para avaliar
+    acerto). Teto guarda a MAIOR alta desde a marca; fundo a MENOR baixa."""
+    raiz = st.session_state.get("ps_marcas", {})
+    porativo = raiz.get(tk, {})
+    for lado, m in porativo.items():
+        if m.get("extremo") is None:
+            m["extremo"] = spot
+        elif lado == "teto":
+            m["extremo"] = max(m["extremo"], spot)
+        else:
+            m["extremo"] = min(m["extremo"], spot)
 
 
 def _forca_indicadores(b_gex, b_tp, b_fluxo, spot):
@@ -1218,12 +1376,31 @@ for tk in tickers_para_rodar:
             sigma_val = float(sigma_ser.iloc[-1]) if pd.notna(sigma_ser.iloc[-1]) else 0.0
 
     setup = detectar_setup(b_gex, spot, flip, dominio, cw, pw)
+
+    # --- PS (Pad Special): régua de exaustão para trava de crédito -----------
+    # NET direcional do momento (comp − vend, escala de prêmio agressor). O NET
+    # classifica o risco da parede segundo os limiares do operador.
+    net_dir_ps = comp - vend
+    atr_ref, ancora_close = atr_diario_ref(tk)   # ATR(14) e close de D-1 (congelados)
+    ps_teto = detectar_ps("teto", spot, b_gex, vwap_val, sigma_val,
+                          net_dir_ps, ancora_close, atr_ref, PS_THRESHOLDS)
+    ps_fundo = detectar_ps("fundo", spot, b_gex, vwap_val, sigma_val,
+                           net_dir_ps, ancora_close, atr_ref, PS_THRESHOLDS)
+    # marca as duas trilhas do dia (não apaga a anterior) e atualiza extremos
+    _hora_ny = agora_ny.strftime("%H:%M")
+    ps_registrar_marca(tk, ps_teto, spot, _hora_ny)
+    ps_registrar_marca(tk, ps_fundo, spot, _hora_ny)
+    ps_atualizar_extremos(tk, spot)
+
     dados_ativos[tk] = dict(spot=spot, prev=bruto["prev"], hist=hist, venc=venc,
                             fonte=bruto["fonte"], por_strike=por_strike, cw=cw,
                             pw=pw, flip=flip, dominio=dominio, dte0=v_hoje,
                             b_gex=b_gex, tp_df=tp_df, b_tp=b_tp, comp=comp,
                             vend=vend, fluxo_df=fluxo_df, b_fluxo=b_fluxo,
-                            vwap=vwap_val, sigma=sigma_val, setup=setup)
+                            vwap=vwap_val, sigma=sigma_val, setup=setup,
+                            net_dir=net_dir_ps, atr_ref=atr_ref,
+                            ancora_close=ancora_close, ps_teto=ps_teto,
+                            ps_fundo=ps_fundo)
 
 # --- Cabeçalho ---------------------------------------------------------------
 fonte_geral = "● Tempo real Tradier" if dados_ativos and all(
@@ -1233,7 +1410,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v4.8</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v4.9</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
@@ -1272,7 +1449,7 @@ if "SPY" in dados_ativos and "QQQ" in dados_ativos:
 
 # --- Abas ---------------------------------------------------------------------
 nomes_abas = ["Delta-Hedging", "Fluxo", "Time Pressure", "Abertura",
-              "SPY×QQQ", "Níveis"]
+              "PS", "SPY×QQQ", "Níveis"]
 if MOSTRAR_TV:
     nomes_abas.append("Gráfico TV")
 abas = st.tabs(nomes_abas)
@@ -1503,8 +1680,104 @@ Nenhum setup ativo neste momento — aguardar o preço interagir com as barras-c
         st.markdown(tabela_barras_md(d["b_gex"]))
         st.markdown("---")
 
-# ============================== ABA · SPY×QQQ ================================
+# ============================== ABA · PS (PAD SPECIAL) =======================
 with abas[4]:
+    st.caption("PS · Pad Special — régua de exaustão para trava de crédito vertical "
+               "(execução em SPX; leitura no SPY convertido ×10). Duas trilhas por dia: "
+               "PS Mínima (Put Credit) no fundo e PS Máxima (Call Credit) no teto. "
+               "Obrigatório: preço encostado na parede de Delta Hedging. Bônus: VWAP na "
+               "penúltima/última banda + ATR do dia consumido. O selo de risco vem do NET "
+               "direcional do momento. As marcas do dia não se apagam e são avaliadas no "
+               "fechamento. Ferramenta de ESTUDO — não é recomendação.")
+
+    _RISCO_COR = {"confiavel": "var(--up)", "atencao": "var(--accent)",
+                  "arriscada": "var(--down)", "vetada": "var(--ink-3)"}
+
+    def _bloco_ps_ativo(tk):
+        d = dados_ativos.get(tk)
+        if not d:
+            return
+        spx_fator = 10.0  # SPX ≈ SPY × 10 (execução da trava é em SPX)
+        conv = (lambda v: v * spx_fator) if tk == "SPY" else (lambda v: v)
+        rot_exec = "SPX" if tk == "SPY" else tk
+        # cabeçalho do ativo
+        atr_txt = ("ATR(14) D-1: %.2f · âncora %.2f" % (d["atr_ref"], d["ancora_close"])
+                   if d["atr_ref"] and d["ancora_close"] else "ATR indisponível")
+        net = d["net_dir"]
+        net_txt = ("NET agora: %s (%s)" %
+                   (fmt_usd(net), "comprador" if net > 0 else "vendedor" if net < 0 else "neutro"))
+        st.markdown("#### %s — leitura para %s &nbsp;"
+                    "<span style='font-size:0.72rem;color:#8b98a5'>%s · %s</span>"
+                    % (tk, rot_exec, atr_txt, net_txt), unsafe_allow_html=True)
+
+        # duas trilhas: estado AO VIVO (o que está acontecendo neste refresh)
+        for lado, ps, titulo, trava in (
+                ("teto", d["ps_teto"], "PS Máxima (teto)", "Call Credit Special"),
+                ("fundo", d["ps_fundo"], "PS Mínima (fundo)", "Put Credit Special")):
+            if ps is None:
+                st.markdown('<div class="setup-linha">%s · <b>%s</b> — preço ainda não '
+                            'está testando a parede deste lado. Aguardando.</div>'
+                            % (titulo, trava), unsafe_allow_html=True)
+                continue
+            cor = _RISCO_COR.get(ps["risco"], "var(--ink-2)")
+            niv_txt = ("%.2f" % ps["nivel"] if tk != "SPY"
+                       else "%.2f (SPX ~%.0f)" % (ps["nivel"], conv(ps["nivel"])))
+            if not ps["acende"]:
+                st.markdown(
+                    '<div class="setup-linha" style="border-color:%s">%s · <b>%s</b> '
+                    'em <b>%s</b> — <span style="color:%s">%s</span>. '
+                    'Fluxo forte demais na direção da continuação; a parede provavelmente '
+                    'cede. Não vender a trava contra isso.</div>'
+                    % (cor, titulo, trava, niv_txt, cor, ps["risco_txt"]),
+                    unsafe_allow_html=True)
+                continue
+            bonus_txt = (" · " + " · ".join(ps["bonus"])) if ps["bonus"] else ""
+            st.markdown(
+                '<div class="setup-linha" style="border-color:%s">%s · <b>%s</b> '
+                'em <b>%s</b> — força <b>%s</b> (%d/4)%s · risco '
+                '<span style="color:%s"><b>%s</b></span>.</div>'
+                % (cor, titulo, trava, niv_txt, ps["forca_txt"], ps["forca"],
+                   bonus_txt, cor, ps["risco_txt"]),
+                unsafe_allow_html=True)
+
+        # marcas do dia (persistentes) + avaliação de acerto
+        marcas = st.session_state.get("ps_marcas", {}).get(tk, {})
+        if marcas:
+            st.markdown('<div class="sinal-titulo" style="margin-top:10px">'
+                        'Marcas do dia · avaliação</div>', unsafe_allow_html=True)
+            for lado, titulo in (("teto", "PS Máxima"), ("fundo", "PS Mínima")):
+                m = marcas.get(lado)
+                if not m:
+                    continue
+                res = avaliar_ps(lado, m["nivel"], m.get("extremo"))
+                aberto = (agora_ny.weekday() < 5 and
+                          dtime(9, 30) <= agora_ny.time() < dtime(16, 0))
+                res_txt = {"WIN": "segurou ✓", "LOSS": "furou ✗",
+                           "ABERTO": "em aberto"}.get(res, res)
+                if aberto and res == "WIN":
+                    res_txt = "segurando (dia em curso)"
+                cor_res = {"WIN": "var(--up)", "LOSS": "var(--down)",
+                           "ABERTO": "var(--ink-2)"}.get(res, "var(--ink-2)")
+                niv_txt = ("%.2f" % m["nivel"] if tk != "SPY"
+                           else "%.2f (SPX ~%.0f)" % (m["nivel"], conv(m["nivel"])))
+                st.markdown(
+                    '<div class="sinal-linha" style="font-size:0.9rem">'
+                    '<b>%s</b> marcada %s em <b>%s</b> · força %s · risco na marca: %s · '
+                    'resultado: <span style="color:%s"><b>%s</b></span></div>'
+                    % (titulo, m["hora"], niv_txt, m["forca_txt"], m["risco_txt"],
+                       cor_res, res_txt), unsafe_allow_html=True)
+            st.caption("Definição de acerto: a marca 'segurou' se o preço não superou o "
+                       "nível além de ~0,1% até o fechamento. As marcas não se apagam; o "
+                       "histórico entre dias entra com o registro persistente (Fase 2.3).")
+        st.markdown("---")
+
+    for tk in [t for t in ("SPY", "QQQ") if t in dados_ativos]:
+        _bloco_ps_ativo(tk)
+    if not any(t in dados_ativos for t in ("SPY", "QQQ")):
+        st.info("Sem dados de SPY/QQQ no momento para calcular o PS.")
+
+# ============================== ABA · SPY×QQQ ================================
+with abas[5]:
     if "SPY" in dados_ativos and "QQQ" in dados_ativos:
         s_spy, s_qqq = dados_ativos["SPY"]["setup"], dados_ativos["QQQ"]["setup"]
         cod_spy = s_spy["codigo"] if s_spy else "—"
@@ -1537,7 +1810,7 @@ with abas[4]:
                 "leitura cruzada e o veto automático.")
 
 # ============================== ABA · NÍVEIS ================================
-with abas[5]:
+with abas[6]:
     st.caption("Candlestick 1 min em tempo real (Tradier) com os níveis do dealer "
                "sobrepostos: muros (roxo), ímã/alvo (azul), 1ª positiva (verde), 1ª "
                "negativa (vermelho), defesa do Setup 6 (laranja), flip (amarelo) e VWAP. "
@@ -1560,7 +1833,7 @@ with abas[5]:
 
 # ============================== ABA · GRÁFICO TV =============================
 if MOSTRAR_TV:
-    with abas[6]:
+    with abas[7]:
         simbolos_tv = {"SPY": "AMEX%3ASPY", "QQQ": "NASDAQ%3AQQQ"}
         for tk in ativos_ok:
             url = (f"https://s.tradingview.com/widgetembed/?symbol={simbolos_tv[tk]}"
