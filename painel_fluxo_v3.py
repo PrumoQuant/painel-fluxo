@@ -1110,7 +1110,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v4.1</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v4.2</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
@@ -1123,9 +1123,8 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 regra_dia = DISCIPLINA[agora_ny.timetuple().tm_yday % len(DISCIPLINA)]
-st.markdown(f'<div class="disciplina">🧭 <b>Disciplina do dia:</b> {regra_dia}</div>',
-            unsafe_allow_html=True)
-with st.expander("Ver as 15 regras do operador"):
+with st.expander(f"🧭 Disciplina do dia: {regra_dia}"):
+    st.caption("As 15 regras do operador:")
     for i, regra in enumerate(DISCIPLINA, 1):
         st.markdown(f"**{i}.** {regra}")
 
@@ -1186,17 +1185,6 @@ if True:
         st.markdown(f"#### {tk} — ${d['spot']:.2f}{var} &nbsp;"
                     f"<span style='font-size:0.72rem;color:#8b98a5'>venc. {d['venc']} · "
                     f"{d['fonte']}</span>", unsafe_allow_html=True)
-        if d["dte0"]:
-            st.caption("⚠️ Vencimento HOJE (0DTE): gamma extremo — barras mudam rápido e "
-                       "picos de Time Pressure sinalizam pullback.")
-
-        st.markdown(regua_fluxo_html(d["comp"], d["vend"], d["fluxo_df"]), unsafe_allow_html=True)
-        s = d["setup"]
-        if s:
-            st.markdown(f'<div class="setup-linha">⚙️ <b>Setup ativo:</b> '
-                        f'<span class="amarelo">{s["codigo"]} — {s["nome"]}</span> · '
-                        f'Viés: <b>{s["vies"]}</b> · Alvo: {s["alvo"]}</div>',
-                        unsafe_allow_html=True)
 
         trio = [("Delta Hedging Q", d["por_strike"], "gex", d["b_gex"]),
                 ("Institutional Flow Q", d["fluxo_df"], "notional", d["b_fluxo"]),
@@ -1212,6 +1200,11 @@ if True:
                 with coluna:
                     painel_quantico(titulo, tk, d["spot"], df_, col_, b_,
                                     key=f"vg_{tk}_{col_}", altura=250, faixa=0.03)
+
+        # Volume Imbalance ABAIXO do trio de gráficos
+        st.markdown(regua_fluxo_html(d["comp"], d["vend"], d["fluxo_df"]),
+                    unsafe_allow_html=True)
+
 
         with st.expander("Cartões estratégicos e conversão para futuros"):
             c1, c2, c3, c4, c5 = st.columns(5)
