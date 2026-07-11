@@ -1110,7 +1110,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v4.2</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v4.3</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
@@ -1121,12 +1121,6 @@ st.markdown(f"""
     </div>
 </div>
 """, unsafe_allow_html=True)
-
-regra_dia = DISCIPLINA[agora_ny.timetuple().tm_yday % len(DISCIPLINA)]
-with st.expander(f"🧭 Disciplina do dia: {regra_dia}"):
-    st.caption("As 15 regras do operador:")
-    for i, regra in enumerate(DISCIPLINA, 1):
-        st.markdown(f"**{i}.** {regra}")
 
 # --- Falhas de dados (sem travar o app) --------------------------------------
 if falhas:
@@ -1154,27 +1148,15 @@ if "SPY" in dados_ativos and "QQQ" in dados_ativos:
                     unsafe_allow_html=True)
 
 # --- Abas ---------------------------------------------------------------------
-SECOES = ["Abertura", "Delta-Hedging", "Fluxo", "Time Pressure", "SPY×QQQ", "Níveis"]
+nomes_abas = ["Abertura", "Delta-Hedging", "Fluxo", "Time Pressure",
+              "SPY×QQQ", "Níveis"]
 if MOSTRAR_TV:
-    SECOES.append("Gráfico TV")
-if hasattr(st, "segmented_control"):
-    sel = st.segmented_control(
-        "Ver", SECOES, selection_mode="multi",
-        default=["Abertura", "Delta-Hedging"], label_visibility="collapsed")
-elif hasattr(st, "pills"):
-    sel = st.pills("Ver", SECOES, selection_mode="multi",
-                   default=["Abertura", "Delta-Hedging"], label_visibility="collapsed")
-else:
-    sel = st.multiselect("Ver seções", SECOES,
-                         default=["Abertura", "Delta-Hedging"], label_visibility="collapsed")
-if not sel:
-    sel = ["Abertura"]
-st.markdown("")  # respiro
+    nomes_abas.append("Gráfico TV")
+abas = st.tabs(nomes_abas)
 ativos_ok = [t for t in tickers_para_rodar if t in dados_ativos]
 
-# ===================== GRID PRINCIPAL (sempre visível) ========================
-# Trio de indicadores por ativo — SPY em cima, QQQ embaixo, como o terminal Quantico.
-if True:
+# ============================== ABA · ABERTURA (grid) =========================
+with abas[0]:
     for tk in ativos_ok:
         d = dados_ativos[tk]
         var = ""
@@ -1239,7 +1221,7 @@ if True:
         st.markdown("---")
 
 # ============================== ABA 2 · DELTA-HEDGING ==========================
-if "Delta-Hedging" in sel:
+with abas[1]:
     st.caption("Barras de gamma = defesa dos market makers. Positivas = guard-rails "
                "(estabiliza); negativas = gasolina no fogo (acelera). Escala: "
                "dollar-gamma pleno (Γ·OI·100·S²), escala em bilhões como no terminal de referência.")
@@ -1254,7 +1236,7 @@ if "Delta-Hedging" in sel:
         st.markdown("---")
 
 # ============================== ABA 3 · FLUXO ==================================
-if "Fluxo" in sel:
+with abas[2]:
     st.caption("Volume Imbalance Flow: prêmio agressor por strike. Verde (direita) = "
                "calls compradas / puts vendidas; vermelho (esquerda) = puts compradas / "
                "calls vendidas. Linhas: branca = spot · azul = ímã (maior+) · roxa = muros.")
@@ -1278,7 +1260,7 @@ if "Fluxo" in sel:
         st.markdown("---")
 
 # ============================== ABA 4 · TIME PRESSURE ==========================
-if "Time Pressure" in sel:
+with abas[3]:
     st.caption("Time Pressure (item 1.8, v1): decaimento do delta (charm) forçando o "
                "hedge dos dealers. Positivo = decadência magnetiza para CIMA; negativo = "
                "para BAIXO; picos = alívio → sinal de pullback. Semântica em validação "
@@ -1292,7 +1274,7 @@ if "Time Pressure" in sel:
         st.markdown("---")
 
 # ============================== ABA 5 · SETUPS =================================
-if "Abertura" in sel:
+with abas[0]:
     st.caption("S6 é o mais assertivo · S2 é o mais perigoso e EXIGE confirmação do "
                "SPY · S5 se evita. PrumoQuant Bell (2.3): em construção — sinal "
                "congelado às 9h29:59 NY e avaliado até 10h00 com MAE/MFE.")
@@ -1383,7 +1365,7 @@ Nenhum setup ativo neste momento — aguardar o preço interagir com as barras-c
         st.markdown("---")
 
 # ============================== ABA 6 · SPY×QQQ ================================
-if "SPY×QQQ" in sel:
+with abas[4]:
     if "SPY" in dados_ativos and "QQQ" in dados_ativos:
         s_spy, s_qqq = dados_ativos["SPY"]["setup"], dados_ativos["QQQ"]["setup"]
         cod_spy = s_spy["codigo"] if s_spy else "—"
@@ -1416,7 +1398,7 @@ if "SPY×QQQ" in sel:
                 "leitura cruzada e o veto automático.")
 
 # ============================== ABA 7 · NÍVEIS ================================
-if "Níveis" in sel:
+with abas[5]:
     st.caption("Candlestick 1 min em tempo real (Tradier) com os níveis do dealer "
                "sobrepostos: muros (roxo), ímã/alvo (azul), 1ª positiva (verde), 1ª "
                "negativa (vermelho), defesa do Setup 6 (laranja), flip (amarelo) e VWAP. "
@@ -1439,7 +1421,7 @@ if "Níveis" in sel:
 
 # ============================== ABA 8 · GRÁFICO TV =============================
 if MOSTRAR_TV:
-    if "Gráfico TV" in sel:
+    with abas[6]:
         simbolos_tv = {"SPY": "AMEX%3ASPY", "QQQ": "NASDAQ%3AQQQ"}
         for tk in ativos_ok:
             url = (f"https://s.tradingview.com/widgetembed/?symbol={simbolos_tv[tk]}"
