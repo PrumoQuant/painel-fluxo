@@ -305,9 +305,16 @@ def _stats_do_historico(linhas):
             "total": len(linhas), "avaliados": dec}
 
 def ps_marca_ja_registrada(tk, lado, dia):
-    """Evita gravar a mesma marca (tk/lado/dia) duas vezes — usa flag na sessão."""
+    """Evita gravar a mesma marca (tk/lado/dia) duas vezes. A flag de sessão é o
+    caminho rápido; a fonte da verdade é o BANCO (sobrevive a reload/reabertura —
+    sem isso, reabrir o painel no mesmo dia duplicaria o registro)."""
     chave = f"ps_reg_{tk}_{lado}_{dia}"
     if st.session_state.get(chave):
+        return True
+    linhas, err = supabase_select(
+        "ps_marcas", f"?dia=eq.{dia}&tk=eq.{tk}&lado=eq.{lado}&select=id")
+    if err is None and linhas:
+        st.session_state[chave] = True
         return True
     st.session_state[chave] = True
     return False
@@ -334,6 +341,12 @@ def registrar_bell_sinal_banco(tk, sig, dia_iso, hora_ny):
         return
     chave = f"bell_reg_{tk}_{dia_iso}"
     if st.session_state.get(chave):
+        return
+    # fonte da verdade é o banco: evita duplicar se o painel for reaberto no dia
+    linhas, err = supabase_select(
+        "bell_sinais", f"?dia=eq.{dia_iso}&tk=eq.{tk}&select=id")
+    if err is None and linhas:
+        st.session_state[chave] = True
         return
     st.session_state[chave] = True
     vd = sig.get("vies_dir") or {}
@@ -651,9 +664,18 @@ def atr_diario_ref(ticker):
                         (lo - prev_close).abs()], axis=1).max(axis=1)
         # Wilder RMA(14) = EMA com alpha 1/14
         atr = tr.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
-        # D-1 = penúltima linha (a última é o dia corrente/mais recente)
-        atr_ref = float(atr.iloc[-2]) if pd.notna(atr.iloc[-2]) else None
-        close_ancora = float(cl.iloc[-2]) if pd.notna(cl.iloc[-2]) else None
+        # D-1 = último DIA COMPLETO antes de hoje (por DATA, não por posição):
+        # em pregão aberto a última linha é o dia parcial → D-1 é a anterior;
+        # em fim de semana/pré-mercado a última linha JÁ é o último dia completo.
+        # Usar iloc[-2] cegamente pegaria quinta em vez de sexta num sábado.
+        hoje_ny = datetime.now(ZoneInfo("America/New_York")).date()
+        mask_passado = [d.date() < hoje_ny for d in h.index]
+        if not any(mask_passado):
+            return None, None
+        atr_p = atr[mask_passado]
+        cl_p = cl[mask_passado]
+        atr_ref = float(atr_p.iloc[-1]) if pd.notna(atr_p.iloc[-1]) else None
+        close_ancora = float(cl_p.iloc[-1]) if pd.notna(cl_p.iloc[-1]) else None
         return atr_ref, close_ancora
     except Exception:
         return None, None
@@ -1559,7 +1581,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v5.1</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v5.2</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
