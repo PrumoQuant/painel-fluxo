@@ -1147,7 +1147,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v4.5</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v4.6</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
@@ -1326,11 +1326,12 @@ with abas[3]:
         # VIÉS DIRECIONAL EM DESTAQUE (a resposta rápida: comprado ou vendido)
         vd = sig.get("vies_dir")
         if vd:
+            cor_vies = "var(--up)" if vd["direcao"] == "COMPRADO" else "var(--down)"
             aviso = (' <span style="color:var(--ink-3);font-weight:400">— '
                      'indicadores e fluxo discordam, confirme na abertura</span>'
                      if vd["contradiz"] else "")
             corpo += (f'<div class="vies-dir"><span class="vies-rot">Viés de abertura:</span> '
-                      f'<span class="vies-dir-v">{vd["direcao"]}</span> '
+                      f'<span class="vies-dir-v" style="color:{cor_vies}">{vd["direcao"]}</span> '
                       f'<span class="vies-forca">(sinal {vd["forca"]})</span>{aviso}</div>')
         for acao, nivel, resto in sig["linhas"]:
             if nivel == "—":
