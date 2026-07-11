@@ -136,6 +136,11 @@ st.markdown("""
     .sinal-meta { font-size:0.72rem; color:var(--ink-3); margin-bottom:16px;
         font-variant-numeric:tabular-nums; }
     .sinal-linha { font-size:1.0rem; line-height:1.85; color:var(--ink); font-weight:400; }
+    .vies-dir { font-size:1.05rem; margin:8px 0 12px 0; color:var(--ink); }
+    .vies-rot { font-size:0.7rem; letter-spacing:1.5px; text-transform:uppercase;
+        color:var(--ink-3); font-weight:600; }
+    .vies-dir-v { font-size:1.2rem; font-weight:700; letter-spacing:1px; color:var(--ink); }
+    .vies-forca { font-size:0.8rem; color:var(--ink-2); }
     .sinal-linha .acao { font-weight:600; letter-spacing:0.5px; }
     .sinal-nivel { font-weight:600; color:var(--ink); font-variant-numeric:tabular-nums; }
     .sinal-ctx { font-size:0.8rem; color:var(--ink-2); margin-top:14px;
@@ -718,15 +723,24 @@ def _bell_placar():
 
 
 def _forca_indicadores(b_gex, b_tp, b_fluxo, spot):
-    """Conta quantos dos 3 indicadores concordam com viés de alta e de baixa,
-    olhando a maior barra de cada um acima/abaixo do spot. Retorna (alta, baixa)."""
+    """Conta o viés dos 3 indicadores. Cada indicador dá UM voto, na direção do
+    seu ímã dominante: compara a distância do ímã de alta (acima) com a do ímã de
+    baixa (abaixo) — vence o mais próximo do preço (o que puxa com mais força
+    agora). Retorna (alta, baixa) somando no máximo 3."""
     alta = baixa = 0
-    for b, col in ((b_gex, None), (b_tp, None), (b_fluxo, None)):
+    for b in (b_gex, b_tp, b_fluxo):
         mp, mn = b.get("maior_pos"), b.get("maior_neg")
-        # ímã positivo acima do preço puxa p/ cima; negativo abaixo puxa p/ baixo
-        if mp is not None and mp > spot:
+        d_alta = (mp - spot) if (mp is not None and mp > spot) else None
+        d_baixa = (spot - mn) if (mn is not None and mn < spot) else None
+        if d_alta is not None and d_baixa is not None:
+            # os dois existem: vota no mais PRÓXIMO (puxão mais forte agora)
+            if d_alta <= d_baixa:
+                alta += 1
+            else:
+                baixa += 1
+        elif d_alta is not None:
             alta += 1
-        if mn is not None and mn < spot:
+        elif d_baixa is not None:
             baixa += 1
     return alta, baixa
 
@@ -748,7 +762,7 @@ def direcionamento_abertura(tk, spot, setup, b_gex, b_tp, b_fluxo, comp, vend,
         exec_fut, micro, PTS_FIXO = "ES", "MES", 7
 
     if veto_ativo:
-        return {"tk": tk, "exec": exec_fut, "veto": True,
+        return {"tk": tk, "exec": exec_fut, "veto": True, "vies_dir": None,
                 "linhas": [], "contexto": "",
                 "veto_txt": (f"Operação em {tk} proibida agora — o QQQ aponta baixa "
                              f"sem o SPY confirmar. Sem a permissão do SPY, não se "
@@ -768,15 +782,38 @@ def direcionamento_abertura(tk, spot, setup, b_gex, b_tp, b_fluxo, comp, vend,
                        f"sem níveis-chave claros no {tk} — esperar o preço definir "
                        f"os muros antes de entrar."))
 
-    if alta > baixa:
-        vies = f"alta ({alta}/3 indicadores)"
-    elif baixa > alta:
-        vies = f"baixa ({baixa}/3 indicadores)"
+    # --- VIÉS DIRECIONAL DE ABERTURA (comprado/vendido, sempre dá direção) ---
+    # Placar de 4 votos: 3 indicadores (alta/baixa) + o fluxo agressor.
+    votos_alta = alta + (1 if net > 0 else 0)
+    votos_baixa = baixa + (1 if net < 0 else 0)
+    if votos_alta > votos_baixa:
+        direcao, votos = "COMPRADO", votos_alta
+    elif votos_baixa > votos_alta:
+        direcao, votos = "VENDIDO", votos_baixa
     else:
-        vies = "neutro (indicadores divididos)"
+        # empate: desempata pelo fluxo; se fluxo também neutro, usa o gamma
+        if net > 0:
+            direcao, votos = "COMPRADO", votos_alta
+        elif net < 0:
+            direcao, votos = "VENDIDO", votos_baixa
+        else:
+            direcao, votos = ("COMPRADO", votos_alta) if alta >= baixa else ("VENDIDO", votos_baixa)
+    # força: quantos dos 4 votos concordam
+    if votos >= 4:
+        forca = "forte"
+    elif votos == 3:
+        forca = "moderado"
+    else:
+        forca = "fraco"
+    # detecta contradição indicadores × fluxo (avisa quando o sinal é confuso)
+    contradiz = ((alta > baixa and net < 0) or (baixa > alta and net > 0))
+
     fluxo_txt = ("comprador" if net > 0 else "vendedor") if net != 0 else "neutro"
-    contexto = f"Viés: {vies}. Fluxo agora: {fluxo_txt}."
-    return {"tk": tk, "exec": exec_fut, "veto": False,
+    vies_dir = {"direcao": direcao, "forca": forca, "votos": votos,
+                "contradiz": contradiz}
+    contexto = (f"Indicadores: {alta}/3 alta · {baixa}/3 baixa. "
+                f"Fluxo agora: {fluxo_txt}.")
+    return {"tk": tk, "exec": exec_fut, "veto": False, "vies_dir": vies_dir,
             "linhas": linhas, "contexto": contexto, "veto_txt": ""}
 
 # ----------------------------------------------------------------------------
@@ -1110,7 +1147,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v4.4</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v4.5</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
@@ -1286,6 +1323,15 @@ with abas[3]:
         if sig["veto"]:
             corpo += f'<div class="sinal-linha sinal-veto">{sig["veto_txt"]}</div>'
             continue
+        # VIÉS DIRECIONAL EM DESTAQUE (a resposta rápida: comprado ou vendido)
+        vd = sig.get("vies_dir")
+        if vd:
+            aviso = (' <span style="color:var(--ink-3);font-weight:400">— '
+                     'indicadores e fluxo discordam, confirme na abertura</span>'
+                     if vd["contradiz"] else "")
+            corpo += (f'<div class="vies-dir"><span class="vies-rot">Viés de abertura:</span> '
+                      f'<span class="vies-dir-v">{vd["direcao"]}</span> '
+                      f'<span class="vies-forca">(sinal {vd["forca"]})</span>{aviso}</div>')
         for acao, nivel, resto in sig["linhas"]:
             if nivel == "—":
                 corpo += f'<div class="sinal-linha">{resto}</div>'
