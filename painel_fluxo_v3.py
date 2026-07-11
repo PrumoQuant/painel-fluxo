@@ -1,7 +1,18 @@
 # ============================================================================
-# PAINEL DE FLUXO DE OPÇÕES — VERSÃO 3.6 "CALIBRAÇÃO QUANTICO v3" (ESTUDO)
+# PAINEL DE FLUXO DE OPÇÕES — VERSÃO 4.8 "JANELA DE ABERTURA" (ESTUDO)
 # PrumoQuant · https://prumoquant.streamlit.app
 # ============================================================================
+# NOVIDADES v4.8 — janela operacional do Direcionamento de Abertura (11/07/2026):
+#  * O card de Abertura agora RESPEITA O ESTADO REAL DO MERCADO (relógio de NY):
+#      - 'ativo'      pregão de ações aberto (09:30-16:00 NY) → sinal válido
+#      - 'previa'     15 min antes (09:15-09:30 NY)           → prévia (congela na abertura)
+#      - 'referencia' futuros abertos, ações fechadas         → só níveis, sinal NÃO vale
+#      - 'aguardando' tudo fechado (sábado etc.)              → "aguardando abertura"
+#    Fora de 'ativo'/'previa' o card NÃO emite gatilho nem viés (nada de mandar
+#    "comprar em 748" num sábado). Corrige o comportamento reportado no print.
+#  * Futuros CME (ES/NQ): domingo 18:00 NY → sexta 17:00 NY, pausa diária 17-18 NY.
+#  * Contagem regressiva textual até a próxima abertura no card fora de pregão.
+#
 # NOVIDADES v3.7 — descoberta do menu "Total·1M·5M" (07/07/2026 fim do dia):
 #  D6. AGREGAÇÃO "TOTAL": o gráfico Delta Hedging da Quantico tem um filtro
 #      Total·1M·5M (visível no tutorial). "Total" = soma de TODOS os vencimentos
@@ -61,7 +72,7 @@
 # ============================================================================
 
 import os
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timedelta
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -727,6 +738,71 @@ def _bell_placar():
     return {"win": win, "loss": loss, "be": be, "taxa": taxa, "nota": nota}
 
 
+def _futuros_abertos(wd, tt):
+    """Futuros de índice CME (ES/NQ): domingo 18:00 NY → sexta 17:00 NY,
+    com pausa diária 17:00–18:00 NY nos dias úteis."""
+    if wd == 5:                      # sábado: fechado
+        return False
+    if wd == 6:                      # domingo: abre 18:00
+        return tt >= dtime(18, 0)
+    if wd == 4:                      # sexta: fecha 17:00
+        return tt < dtime(17, 0)
+    if dtime(17, 0) <= tt < dtime(18, 0):   # seg–qui: pausa diária
+        return False
+    return True
+
+
+def _proxima_abertura_txt(agora_ny):
+    """Texto curto de quanto falta para a próxima abertura do pregão de ações."""
+    d = agora_ny
+    cand = d.replace(hour=9, minute=30, second=0, microsecond=0)
+    if d.time() >= dtime(9, 30) or d.weekday() >= 5:
+        cand = cand + timedelta(days=1)
+    while cand.weekday() >= 5:
+        cand = cand + timedelta(days=1)
+    delta = cand - d
+    horas = int(delta.total_seconds() // 3600)
+    mins = int((delta.total_seconds() % 3600) // 60)
+    if horas >= 24:
+        return "abre em ~%dd %dh" % (horas // 24, horas % 24)
+    return "abre em ~%dh %dmin" % (horas, mins)
+
+
+def estado_janela_abertura(agora_ny):
+    """Estado operacional do Direcionamento de Abertura (relógio de NY).
+    Fases: 'ativo' (pregão aberto) · 'previa' (15 min antes) ·
+    'referencia' (futuros abertos, ações fechadas) · 'aguardando' (tudo fechado).
+    Só 'ativo' e 'previa' têm mostrar_sinal=True — nas outras o card não exibe
+    gatilho/viés operacional, só referência."""
+    wd, tt = agora_ny.weekday(), agora_ny.time()
+    abertura, fechamento, prep_ini = dtime(9, 30), dtime(16, 0), dtime(9, 15)
+    if wd < 5 and abertura <= tt < fechamento:
+        return {"fase": "ativo", "mostrar_sinal": True,
+                "rotulo": "pregão aberto", "nota": "", "countdown": ""}
+    if wd < 5 and prep_ini <= tt < abertura:
+        faltam = (datetime.combine(agora_ny.date(), abertura,
+                                   tzinfo=agora_ny.tzinfo) - agora_ny)
+        mins = max(0, int(faltam.total_seconds() // 60))
+        return {"fase": "previa", "mostrar_sinal": True,
+                "rotulo": "prévia de abertura",
+                "nota": ("Prévia — faltam ~%d min para a abertura. O sinal só se "
+                         "congela às 09:30 NY (10:30 BR); até lá os níveis ainda "
+                         "podem mudar." % mins),
+                "countdown": ""}
+    if _futuros_abertos(wd, tt):
+        return {"fase": "referencia", "mostrar_sinal": False,
+                "rotulo": "futuros abertos · ações fechadas",
+                "nota": ("Futuros negociando, mas o pregão de ações está fechado — "
+                         "os níveis servem de referência, o sinal de abertura ainda "
+                         "não é válido. Ele se congela na próxima abertura, 09:30 NY."),
+                "countdown": _proxima_abertura_txt(agora_ny)}
+    return {"fase": "aguardando", "mostrar_sinal": False,
+            "rotulo": "mercado fechado",
+            "nota": ("Mercado fechado. O Direcionamento de Abertura será congelado "
+                     "na próxima abertura, 09:30 NY (10:30 BR)."),
+            "countdown": _proxima_abertura_txt(agora_ny)}
+
+
 def _forca_indicadores(b_gex, b_tp, b_fluxo, spot):
     """Conta o viés dos 3 indicadores. Cada indicador dá UM voto, na direção do
     seu ímã dominante: compara a distância do ímã de alta (acima) com a do ímã de
@@ -1157,7 +1233,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v4.7</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v4.8</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
@@ -1202,7 +1278,7 @@ if MOSTRAR_TV:
 abas = st.tabs(nomes_abas)
 ativos_ok = [t for t in tickers_para_rodar if t in dados_ativos]
 
-# ============================== ABA · ABERTURA (grid) =========================
+# ============================== ABA · DELTA-HEDGING (grid) ====================
 with abas[0]:
     for tk in ativos_ok:
         d = dados_ativos[tk]
@@ -1285,7 +1361,7 @@ with abas[1]:
                         altura=300, faixa=0.03, horizontal=MODO_CELULAR)
         st.markdown("---")
 
-# ============================== ABA 4 · TIME PRESSURE ==========================
+# ============================== ABA · TIME PRESSURE ==========================
 with abas[2]:
     st.caption("Time Pressure (item 1.8, v1): decaimento do delta (charm) forçando o "
                "hedge dos dealers. Positivo = decadência magnetiza para CIMA; negativo = "
@@ -1299,20 +1375,21 @@ with abas[2]:
         st.markdown(tabela_barras_md(d["b_tp"]))
         st.markdown("---")
 
-# ============================== ABA 5 · SETUPS =================================
+# ============================== ABA · ABERTURA (setups) =======================
 with abas[3]:
     st.caption("S6 é o mais assertivo · S2 é o mais perigoso e EXIGE confirmação do "
                "SPY · S5 se evita. PrumoQuant Bell (2.3): em construção — sinal "
                "congelado às 9h29:59 NY e avaliado até 10h00 com MAE/MFE.")
 
+    # --- JANELA OPERACIONAL: só emite sinal na abertura/prévia ---------------
+    janela = estado_janela_abertura(agora_ny)
+
     # --- DIRECIONAMENTO DE ABERTURA — quadro clean, monocromático ---
     dias_sem = ["segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo"]
     dia_txt = f"{dias_sem[agora_ny.weekday()]}, {agora_ny.strftime('%d/%m/%Y')}"
-    aberto = (agora_ny.weekday() < 5 and dtime(9, 30) <= agora_ny.time() < dtime(16, 0))
-    pre = (agora_ny.weekday() < 5 and dtime(4, 0) <= agora_ny.time() < dtime(9, 30))
-    estado = "mercado aberto" if aberto else ("pré-mercado" if pre else "mercado fechado")
+    aberto = (janela["fase"] == "ativo")
     meta = (f"{dia_txt} &nbsp;·&nbsp; {agora_ny.strftime('%H:%M')} NY / "
-            f"{agora_br.strftime('%H:%M')} BR &nbsp;·&nbsp; {estado}")
+            f"{agora_br.strftime('%H:%M')} BR &nbsp;·&nbsp; {janela['rotulo']}")
 
     veto_geral = ("SPY" in dados_ativos and "QQQ" in dados_ativos and
                   dados_ativos["QQQ"]["setup"] and
@@ -1322,7 +1399,10 @@ with abas[3]:
     ordem_dir = [t for t in ("QQQ", "SPY") if t in ativos_ok]
 
     corpo = ""
-    for tk in ordem_dir:
+    # Só monta gatilhos/viés quando o sinal é operacionalmente válido
+    # (fase 'ativo' ou 'previa'). Fora disso o loop não roda e o card
+    # exibe apenas o bloco de estado (AGUARDANDO / referência) mais abaixo.
+    for tk in (ordem_dir if janela["mostrar_sinal"] else []):
         d = dados_ativos[tk]
         veto_tk = veto_geral and tk == "QQQ"
         _nf, _pf, _rf = razao_futuro(tk, d["spot"])
@@ -1361,9 +1441,23 @@ with abas[3]:
                           f'<span class="sinal-nivel">{nivel}</span> — {resto}</div>')
         corpo += f'<div class="sinal-ctx">{sig["contexto"]}</div>'
 
-    aviso_fechado = ("" if aberto else
-                     '<div class="sinal-nota">Mercado fora do pregão — os níveis são do '
-                     'último dado e não refletem movimento ao vivo.</div>')
+    # Bloco de ESTADO fora da janela operacional (aguardando / referência):
+    # em vez de gatilho, mostra "AGUARDANDO" + contagem regressiva + nota.
+    if not janela["mostrar_sinal"]:
+        cd = (" · %s" % janela["countdown"]) if janela["countdown"] else ""
+        corpo = (
+            '<div class="acao-abertura" style="border-color:var(--ink-3)">'
+            '<span class="acao-rot">Na abertura:</span> '
+            '<span class="acao-big" style="color:var(--ink-2)">AGUARDANDO</span> '
+            '<span class="vies-forca">(%s%s)</span></div>' % (janela["rotulo"], cd))
+
+    # Nota de rodapé conforme a fase.
+    if janela["mostrar_sinal"]:
+        aviso_fechado = ("" if janela["fase"] == "ativo" else
+                         '<div class="sinal-nota">%s</div>' % janela["nota"])
+    else:
+        aviso_fechado = '<div class="sinal-nota">%s</div>' % janela["nota"]
+
     st.markdown(
         f'<div class="sinal-box">'
         f'<div class="sinal-titulo">Direcionamento de abertura</div>'
@@ -1409,7 +1503,7 @@ Nenhum setup ativo neste momento — aguardar o preço interagir com as barras-c
         st.markdown(tabela_barras_md(d["b_gex"]))
         st.markdown("---")
 
-# ============================== ABA 6 · SPY×QQQ ================================
+# ============================== ABA · SPY×QQQ ================================
 with abas[4]:
     if "SPY" in dados_ativos and "QQQ" in dados_ativos:
         s_spy, s_qqq = dados_ativos["SPY"]["setup"], dados_ativos["QQQ"]["setup"]
@@ -1442,7 +1536,7 @@ with abas[4]:
         st.info("Ative o modo **SPY + QQQ lado a lado** na barra lateral para a "
                 "leitura cruzada e o veto automático.")
 
-# ============================== ABA 7 · NÍVEIS ================================
+# ============================== ABA · NÍVEIS ================================
 with abas[5]:
     st.caption("Candlestick 1 min em tempo real (Tradier) com os níveis do dealer "
                "sobrepostos: muros (roxo), ímã/alvo (azul), 1ª positiva (verde), 1ª "
@@ -1464,7 +1558,7 @@ with abas[5]:
                        "yfinance sem OHLC intraday).")
         st.markdown("---")
 
-# ============================== ABA 8 · GRÁFICO TV =============================
+# ============================== ABA · GRÁFICO TV =============================
 if MOSTRAR_TV:
     with abas[6]:
         simbolos_tv = {"SPY": "AMEX%3ASPY", "QQQ": "NASDAQ%3AQQQ"}
