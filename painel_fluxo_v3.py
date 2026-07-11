@@ -140,6 +140,11 @@ st.markdown("""
     .vies-rot { font-size:0.7rem; letter-spacing:1.5px; text-transform:uppercase;
         color:var(--ink-3); font-weight:600; }
     .vies-dir-v { font-size:1.2rem; font-weight:700; letter-spacing:1px; color:var(--ink); }
+    .acao-abertura { border:1px solid var(--ink-3); border-radius:8px;
+        padding:14px 18px; margin:6px 0 14px 0; background:rgba(255,255,255,0.02); }
+    .acao-rot { font-size:0.68rem; letter-spacing:2px; text-transform:uppercase;
+        color:var(--ink-3); font-weight:600; margin-right:10px; }
+    .acao-big { font-size:1.55rem; font-weight:800; letter-spacing:1px; }
     .vies-forca { font-size:0.8rem; color:var(--ink-2); }
     .sinal-linha .acao { font-weight:600; letter-spacing:0.5px; }
     .sinal-nivel { font-weight:600; color:var(--ink); font-variant-numeric:tabular-nums; }
@@ -805,14 +810,19 @@ def direcionamento_abertura(tk, spot, setup, b_gex, b_tp, b_fluxo, comp, vend,
         forca = "moderado"
     else:
         forca = "fraco"
+    # AÇÃO DE ABERTURA (regra do operador): 3/4 ou mais = ENTRAR IMEDIATO ao abrir;
+    # 2/4 ou menos = AGUARDAR e usar os gatilhos condicionais.
+    entrar_imediato = votos >= 3
+    acao_abertura = ("ENTRAR " + direcao) if entrar_imediato else "AGUARDAR"
     # detecta contradição indicadores × fluxo (avisa quando o sinal é confuso)
     contradiz = ((alta > baixa and net < 0) or (baixa > alta and net > 0))
 
     fluxo_txt = ("comprador" if net > 0 else "vendedor") if net != 0 else "neutro"
     vies_dir = {"direcao": direcao, "forca": forca, "votos": votos,
-                "contradiz": contradiz}
-    contexto = (f"Indicadores: {alta}/3 alta · {baixa}/3 baixa. "
-                f"Fluxo agora: {fluxo_txt}.")
+                "contradiz": contradiz, "entrar_imediato": entrar_imediato,
+                "acao_abertura": acao_abertura}
+    contexto = (f"Placar: {votos}/4 votos {'(entra imediato)' if entrar_imediato else '(fraco — aguardar)'}. "
+                f"Indicadores {alta}/3 alta · {baixa}/3 baixa · fluxo {fluxo_txt}.")
     return {"tk": tk, "exec": exec_fut, "veto": False, "vies_dir": vies_dir,
             "linhas": linhas, "contexto": contexto, "veto_txt": ""}
 
@@ -1147,7 +1157,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v4.6</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v4.7</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
@@ -1323,16 +1333,25 @@ with abas[3]:
         if sig["veto"]:
             corpo += f'<div class="sinal-linha sinal-veto">{sig["veto_txt"]}</div>'
             continue
-        # VIÉS DIRECIONAL EM DESTAQUE (a resposta rápida: comprado ou vendido)
+        # AÇÃO DE ABERTURA EM DESTAQUE MÁXIMO (a resposta no minuto 0)
         vd = sig.get("vies_dir")
         if vd:
-            cor_vies = "var(--up)" if vd["direcao"] == "COMPRADO" else "var(--down)"
-            aviso = (' <span style="color:var(--ink-3);font-weight:400">— '
-                     'indicadores e fluxo discordam, confirme na abertura</span>'
-                     if vd["contradiz"] else "")
-            corpo += (f'<div class="vies-dir"><span class="vies-rot">Viés de abertura:</span> '
-                      f'<span class="vies-dir-v" style="color:{cor_vies}">{vd["direcao"]}</span> '
-                      f'<span class="vies-forca">(sinal {vd["forca"]})</span>{aviso}</div>')
+            if vd["entrar_imediato"]:
+                cor_vies = "var(--up)" if vd["direcao"] == "COMPRADO" else "var(--down)"
+                corpo += (f'<div class="acao-abertura" style="border-color:{cor_vies}">'
+                          f'<span class="acao-rot">Na abertura:</span> '
+                          f'<span class="acao-big" style="color:{cor_vies}">{vd["acao_abertura"]}</span> '
+                          f'<span class="vies-forca">({vd["votos"]}/4 · {vd["forca"]})</span></div>')
+                aviso_c = ('<div class="sinal-nota">⚠ Indicadores e fluxo discordam — '
+                           'sinal imediato menos confiável, confirme o primeiro minuto.</div>'
+                           if vd["contradiz"] else "")
+                corpo += aviso_c
+            else:
+                corpo += (f'<div class="acao-abertura" style="border-color:var(--ink-3)">'
+                          f'<span class="acao-rot">Na abertura:</span> '
+                          f'<span class="acao-big" style="color:var(--ink-2)">AGUARDAR</span> '
+                          f'<span class="vies-forca">(só {vd["votos"]}/4 — sinal fraco). '
+                          f'Espere o preço tocar um gatilho abaixo.</span></div>')
         for acao, nivel, resto in sig["linhas"]:
             if nivel == "—":
                 corpo += f'<div class="sinal-linha">{resto}</div>'
