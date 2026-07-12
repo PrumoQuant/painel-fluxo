@@ -410,6 +410,43 @@ PS_NET_FORT = st.sidebar.slider("NET forte até (M)", 2.0, 8.0, 4.0, 0.1,
     help="Forte: pode furar ou colar no teto/fundo (foi a sexta). Acima disso, vetada.")
 PS_THRESHOLDS = (PS_NET_CONF * 1e6, PS_NET_ATEN * 1e6, PS_NET_FORT * 1e6)
 
+st.sidebar.markdown("---")
+st.sidebar.caption("Alertas de NET extremo")
+st.sidebar.caption("Régua validada em 3 dias reais: ~3M parede segura no fio · >4M muito "
+                   "forte · 6–8M brutal (05/06, IPO SpaceX). Recalibrar pela escala real.")
+ALERTA_NET_1 = st.sidebar.slider("Alerta forte a partir de (M)", 2.0, 8.0, 4.0, 0.5,
+    help="NET (compra ou venda) acima disso: fluxo muito forte, paredes sofrem.")
+ALERTA_NET_2 = st.sidebar.slider("Alarme máximo a partir de (M)", 3.0, 12.0, 5.0, 0.5,
+    help="Acima disso: fluxo brutal (tipo 05/06), paredes tendem a romper.")
+
+
+def disparar_alertas_net(tk, net_dir, t1, t2, dia_iso):
+    """Alerta de NET extremo (pedido do operador; calibrado nos dias 26/06, 09/06
+    e 05/06-SpaceX). Popup (st.toast) no MÁXIMO 2 vezes por nível/ativo/dia; o
+    banner persiste enquanto a condição durar. Retorna o html do banner ou ''."""
+    mag = abs(num(net_dir))
+    if mag < t1:
+        return ""
+    nivel = 2 if mag >= t2 else 1
+    lado = "COMPRA" if net_dir > 0 else "VENDA"
+    rot = "🚨 ALARME MÁXIMO" if nivel == 2 else "⚠ ALERTA FORTE"
+    msg = (f"{rot} · {tk}: NET {fmt_usd(net_dir)} ({lado}) — fluxo "
+           f"{'brutal: paredes tendem a ROMPER' if nivel == 2 else 'muito forte: paredes sob pressão'}. "
+           f"Não vender trava contra essa direção.")
+    chave = f"net_alert_{tk}_{nivel}_{dia_iso}"
+    vezes = st.session_state.get(chave, 0)
+    if vezes < 2:
+        try:
+            st.toast(msg, icon="🚨" if nivel == 2 else "⚠️")
+        except Exception:
+            pass
+        st.session_state[chave] = vezes + 1
+    cor = "#f0533f" if nivel == 2 else "#d9a441"
+    fundo = "rgba(240,83,63,0.12)" if nivel == 2 else "rgba(217,164,65,0.08)"
+    return (f'<div style="border:1px solid {cor};background:{fundo};'
+            f'color:var(--ink);border-radius:8px;padding:10px 16px;margin:6px 0;'
+            f'font-weight:600;font-size:0.9rem">{msg}</div>')
+
 with st.sidebar.expander("Preferências de exibição"):
     MOSTRAR_VWAP = st.checkbox("Gráfico Preço × VWAP (com bandas)", value=True)
     MODO_BANDAS = st.selectbox("Modo das bandas VWAP",
@@ -1573,6 +1610,14 @@ for tk in tickers_para_rodar:
                             ancora_close=ancora_close, ps_teto=ps_teto,
                             ps_fundo=ps_fundo)
 
+# --- Alertas de NET extremo (>4M muito forte · 6–8M brutal, dia 05/06) -------
+_dia_alerta = agora_ny.strftime("%Y-%m-%d")
+alertas_net_html = ""
+for _tk_a in dados_ativos:
+    alertas_net_html += disparar_alertas_net(
+        _tk_a, dados_ativos[_tk_a]["net_dir"],
+        ALERTA_NET_1 * 1e6, ALERTA_NET_2 * 1e6, _dia_alerta)
+
 # --- Cabeçalho ---------------------------------------------------------------
 fonte_geral = "● Tempo real Tradier" if dados_ativos and all(
     d["fonte"].startswith("Tradier") for d in dados_ativos.values()) else "● Fallback yfinance (~15 min)"
@@ -1581,7 +1626,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v5.2</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v5.3</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
@@ -1592,6 +1637,10 @@ st.markdown(f"""
     </div>
 </div>
 """, unsafe_allow_html=True)
+
+# Banner de NET extremo — persiste enquanto a condição durar (topo, sempre visível)
+if alertas_net_html:
+    st.markdown(alertas_net_html, unsafe_allow_html=True)
 
 # --- Falhas de dados (sem travar o app) --------------------------------------
 if falhas:
