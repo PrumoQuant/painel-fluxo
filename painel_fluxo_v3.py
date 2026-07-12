@@ -428,7 +428,10 @@ NET_DIVISOR = st.sidebar.slider(
 def disparar_alertas_net(tk, net_dir, t1, t2, dia_iso):
     """Alerta de NET extremo (pedido do operador; calibrado nos dias 26/06, 09/06
     e 05/06-SpaceX). Popup (st.toast) no MÁXIMO 2 vezes por nível/ativo/dia; o
-    banner persiste enquanto a condição durar. Retorna o html do banner ou ''."""
+    banner persiste enquanto a condição durar. Retorna o html do banner ou ''.
+    net_dir None (pregão fechado) → sem alerta (não há fluxo ao vivo)."""
+    if net_dir is None:
+        return ""
     mag = abs(num(net_dir))
     if mag < t1:
         return ""
@@ -1124,6 +1127,8 @@ def detectar_ps(lado, spot, b_gex, vwap, sigma, net_dir,
     parede = b_gex.get("maior_pos") if lado == "teto" else b_gex.get("maior_neg")
     if parede is None or abs(spot - parede) / spot > PS_TOL_PAREDE:
         return None
+    if net_dir is None:            # pregão fechado → sem leitura de fluxo, PS aguarda
+        return None
     nivel_risco, txt_risco = ps_selo_risco(net_dir, lado, thresholds)
     if nivel_risco == "vetada":
         return {"lado": lado, "nivel": parede, "acende": False,
@@ -1302,6 +1307,14 @@ DISCIPLINA = [
 # ----------------------------------------------------------------------------
 # COMPONENTES VISUAIS (estilo Quantico)
 # ----------------------------------------------------------------------------
+def pregao_acoes_aberto(t_ny):
+    """True só quando o pregão de AÇÕES está negociando ao vivo (seg–sex 9:30–16:00
+    NY). É a condição para o NET operacional refletir fluxo real: fora disso o campo
+    'volume' da Tradier traz o acumulado da última sessão inteira, que não é fluxo
+    do momento (foi o que gerou o NET fantasma de $24M num domingo)."""
+    return t_ny.weekday() < 5 and dtime(9, 30) <= t_ny.time() < dtime(16, 0)
+
+
 def selo_mercado(t_ny):
     wd, tt = t_ny.weekday(), t_ny.time()
     if wd < 5 and dtime(9, 30) <= tt < dtime(16, 0):
@@ -1337,6 +1350,8 @@ def regua_fluxo_html(comp, vend, fluxo_df=None, net_op=None):
     if net_op is not None:
         cor_op = "verde" if net_op >= 0 else "vermelho"
         partes.append(f'<span class="{cor_op}"><b>NET op: {fmt_usd(net_op)}</b></span>')
+    else:
+        partes.append('<span style="color:#6b7280"><b>NET op: — (pregão fechado)</b></span>')
     if net_top is not None:
         partes.append(f'<span class="{cor_net}">topo: {fmt_usd(net_top)}</span>')
     partes.append(f'<span style="color:#6b7280">multi-venc {fmt_usd(net_dia)}</span>')
@@ -1601,10 +1616,13 @@ for tk in tickers_para_rodar:
     setup = detectar_setup(b_gex, spot, flip, dominio, cw, pw)
 
     # --- PS (Pad Special): régua de exaustão para trava de crédito -----------
-    # NET OPERACIONAL (v5.4): 0DTE + janela ±10% ÷ divisor de calibração. É o
-    # número comparável ao Volume Imbalance da Quantico e o que alimenta o PS,
-    # os alertas e a régua. O NET multi-vencimento antigo inflava 10–50×.
-    net_dir_ps = (comp_op - vend_op) / max(NET_DIVISOR, 1.0)
+    # NET OPERACIONAL (v5.5): só vale com o PREGÃO DE AÇÕES ABERTO. Fora dele, o
+    # campo 'volume' da Tradier é o acumulado da última sessão inteira — não é
+    # fluxo do momento (gerava NET fantasma tipo $24M num domingo). Fechado → None.
+    if pregao_acoes_aberto(agora_ny):
+        net_dir_ps = (comp_op - vend_op) / max(NET_DIVISOR, 1.0)
+    else:
+        net_dir_ps = None
     atr_ref, ancora_close = atr_diario_ref(tk)   # ATR(14) e close de D-1 (congelados)
     ps_teto = detectar_ps("teto", spot, b_gex, vwap_val, sigma_val,
                           net_dir_ps, ancora_close, atr_ref, PS_THRESHOLDS)
@@ -1650,7 +1668,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v5.4</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v5.5</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
@@ -1970,8 +1988,11 @@ with abas[4]:
         atr_txt = ("ATR(14) D-1: %.2f · âncora %.2f" % (d["atr_ref"], d["ancora_close"])
                    if d["atr_ref"] and d["ancora_close"] else "ATR indisponível")
         net = d["net_dir"]
-        net_txt = ("NET agora: %s (%s)" %
-                   (fmt_usd(net), "comprador" if net > 0 else "vendedor" if net < 0 else "neutro"))
+        if net is None:
+            net_txt = "NET: — (pregão fechado, sem fluxo ao vivo)"
+        else:
+            net_txt = ("NET agora: %s (%s)" % (fmt_usd(net),
+                       "comprador" if net > 0 else "vendedor" if net < 0 else "neutro"))
         st.markdown("#### %s — leitura para %s &nbsp;"
                     "<span style='font-size:0.72rem;color:#8b98a5'>%s · %s</span>"
                     % (tk, rot_exec, atr_txt, net_txt), unsafe_allow_html=True)
