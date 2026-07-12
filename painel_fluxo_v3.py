@@ -418,6 +418,11 @@ ALERTA_NET_1 = st.sidebar.slider("Alerta forte a partir de (M)", 2.0, 8.0, 4.0, 
     help="NET (compra ou venda) acima disso: fluxo muito forte, paredes sofrem.")
 ALERTA_NET_2 = st.sidebar.slider("Alarme máximo a partir de (M)", 3.0, 12.0, 5.0, 0.5,
     help="Acima disso: fluxo brutal (tipo 05/06), paredes tendem a romper.")
+NET_DIVISOR = st.sidebar.slider(
+    "Divisor de escala do NET", 1.0, 20.0, 1.0, 0.5,
+    help="Calibração vs Quantico (segunda, lado a lado): se o nosso NET operacional "
+         "ainda rodar N× maior que o deles no mesmo minuto, ajuste o divisor até "
+         "as escalas baterem. O NET operacional já é 0DTE + janela ±10%.")
 
 
 def disparar_alertas_net(tk, net_dir, t1, t2, dia_iso):
@@ -839,20 +844,24 @@ def calcular_time_pressure(calls, puts, spot, venc_str, r, ponderar=False):
         dft = dft[dft["tp"].abs() >= 0.01 * pico]
     return dft.sort_values("strike").reset_index(drop=True)
 
-def calcular_fluxo_institucional(calls, puts, spot):
+def calcular_fluxo_institucional(calls, puts, spot, venc_str=None):
     """Classificação pelos terços do spread, com duas calibrações Quantico:
-    — Descoberta 3 (FILTRO Q, documentado no tutorial deles): exclui contratos
-      cujo último/abertura > 2,0 (já lucraram +100%) ou < 0,05 (já perderam
-      −95%). É essa limpeza que gera a leitura 'Q' exclusiva do terminal.
-    — Descoberta 2 (NOTIONAL): além do prêmio (K/M, para a régua e o Volume
-      Imbalance), calcula o notional do subjacente (volume·100·S, sinalizado),
-      que é a escala B dos painéis Institutional Flow Q.
+    — Descoberta 3 (FILTRO Q): exclui último/abertura > 2,0 ou < 0,05.
+    — Descoberta 2 (NOTIONAL): notional do subjacente (volume·100·S) para a
+      escala B dos painéis Institutional Flow Q (multi-vencimento, INTOCADO).
+    — NET OPERACIONAL (v5.4, correção de escala): além do total multi-venc,
+      calcula comp_op/vend_op APENAS do vencimento mais próximo (0DTE) e na
+      janela 0,90–1,10·S. É esse NET que alimenta PS, alertas e régua — o
+      Volume Imbalance da Quantico é intraday/0DTE; somar 6 vencimentos e
+      ITM profundo inflava nosso NET 10–50× (QQQ chegou a $94,7M).
     bull = call comprada OU put vendida · bear = put comprada OU call vendida."""
     comp = vend = 0.0
+    comp_op = vend_op = 0.0
     mapa = {}
     for df, tipo in ((calls, "call"), (puts, "put")):
         if df is None or df.empty:
             continue
+        tem_venc = "venc_opt" in df.columns
         for _, row in df.iterrows():
             k = num(row.get("strike"))
             vol = num(row.get("volume"))
@@ -869,6 +878,11 @@ def calcular_fluxo_institucional(calls, puts, spot):
             mid = (bid + ask) / 2.0
             if mid <= 0 or (ask - bid) / mid > 0.25:   # filtro anti-spread esticado
                 continue
+            # este contrato entra no NET OPERACIONAL? (0DTE + janela ±10%)
+            eh_0dte = (not tem_venc) or (venc_str is None) or \
+                      (row.get("venc_opt") == venc_str)
+            na_janela = (spot * 0.90 <= k <= spot * 1.10)
+            operacional = eh_0dte and na_janela
             spread = ask - bid
             terco_baixo = bid + spread / 3.0
             terco_alto = ask - spread / 3.0
@@ -878,21 +892,25 @@ def calcular_fluxo_institucional(calls, puts, spot):
             if ultimo >= terco_alto:      # negociado perto do ask = agressão compradora
                 if tipo == "call":
                     comp += premio; entrada["bull"] += premio; entrada["ntl"] += notional
+                    if operacional: comp_op += premio
                 else:
                     vend += premio; entrada["bear"] += premio; entrada["ntl"] -= notional
+                    if operacional: vend_op += premio
             elif ultimo <= terco_baixo:   # negociado perto do bid = agressão vendedora
                 if tipo == "call":
                     vend += premio; entrada["bear"] += premio; entrada["ntl"] -= notional
+                    if operacional: vend_op += premio
                 else:
                     comp += premio; entrada["bull"] += premio; entrada["ntl"] += notional
+                    if operacional: comp_op += premio
     linhas = [{"strike": k, "bull": v["bull"], "bear": v["bear"],
                "net": v["bull"] - v["bear"], "notional": v["ntl"]}
               for k, v in mapa.items()]
     if not linhas:
         return comp, vend, pd.DataFrame(
-            columns=["strike", "bull", "bear", "net", "notional"])
+            columns=["strike", "bull", "bear", "net", "notional"]), comp_op, vend_op
     dff = pd.DataFrame(linhas).sort_values("strike").reset_index(drop=True)
-    return comp, vend, dff
+    return comp, vend, dff, comp_op, vend_op
 
 def detectar_setup(barras, spot, flip, dominio, cw, pw):
     if not barras:
@@ -1292,7 +1310,7 @@ def selo_mercado(t_ny):
         return '<span class="selo selo-pre">PRÉ-MERCADO</span>'
     return '<span class="selo selo-fechado">MERCADO FECHADO</span>'
 
-def regua_fluxo_html(comp, vend, fluxo_df=None):
+def regua_fluxo_html(comp, vend, fluxo_df=None, net_op=None):
     tot = comp + vend
     p_comp = (comp / tot * 100) if tot > 0 else 50.0
     p_vend = 100.0 - p_comp
@@ -1312,13 +1330,17 @@ def regua_fluxo_html(comp, vend, fluxo_df=None):
         cor_net = "verde" if net_top >= 0 else "vermelho"
         top_txt = (f' · TOP STRIKE <span class="{cor_net}">{k_top:.0f} '
                    f'({fmt_usd(net_top)})</span>')
-    # Linha inferior: NET do topo em destaque (como no terminal) + total do dia discreto.
+    # Linha inferior: NET OPERACIONAL em destaque (0DTE+janela — comparável ao
+    # Volume Imbalance da Quantico; é o que o PS e os alertas usam), topo do
+    # strike ao lado, e o total multi-venc discreto no fim.
+    partes = []
+    if net_op is not None:
+        cor_op = "verde" if net_op >= 0 else "vermelho"
+        partes.append(f'<span class="{cor_op}"><b>NET op: {fmt_usd(net_op)}</b></span>')
     if net_top is not None:
-        net_html = (f'<span class="{cor_net}">NET (topo): {fmt_usd(net_top)}</span>'
-                    f'<span style="color:#6b7280"> · dia {fmt_usd(net_dia)}</span>')
-    else:
-        net_html = (f'<span class="{"verde" if net_dia >= 0 else "vermelho"}">'
-                    f'NET: {fmt_usd(net_dia)}</span>')
+        partes.append(f'<span class="{cor_net}">topo: {fmt_usd(net_top)}</span>')
+    partes.append(f'<span style="color:#6b7280">multi-venc {fmt_usd(net_dia)}</span>')
+    net_html = " · ".join(partes)
     return f"""
     <div class="fluxobar-wrap">
         <div class="fluxobar-top">
@@ -1565,7 +1587,8 @@ for tk in tickers_para_rodar:
     b_gex = identificar_barras_chave(por_strike, spot, "gex")
     tp_df = calcular_time_pressure(calls, puts, spot, venc, r_global, PESO_PONDERADO)
     b_tp = identificar_barras_chave(tp_df, spot, "tp")
-    comp, vend, fluxo_df = calcular_fluxo_institucional(calls, puts, spot)
+    comp, vend, fluxo_df, comp_op, vend_op = calcular_fluxo_institucional(
+        calls, puts, spot, venc)
     b_fluxo = identificar_barras_chave(fluxo_df, spot, "notional")
 
     vwap_val = sigma_val = None
@@ -1578,9 +1601,10 @@ for tk in tickers_para_rodar:
     setup = detectar_setup(b_gex, spot, flip, dominio, cw, pw)
 
     # --- PS (Pad Special): régua de exaustão para trava de crédito -----------
-    # NET direcional do momento (comp − vend, escala de prêmio agressor). O NET
-    # classifica o risco da parede segundo os limiares do operador.
-    net_dir_ps = comp - vend
+    # NET OPERACIONAL (v5.4): 0DTE + janela ±10% ÷ divisor de calibração. É o
+    # número comparável ao Volume Imbalance da Quantico e o que alimenta o PS,
+    # os alertas e a régua. O NET multi-vencimento antigo inflava 10–50×.
+    net_dir_ps = (comp_op - vend_op) / max(NET_DIVISOR, 1.0)
     atr_ref, ancora_close = atr_diario_ref(tk)   # ATR(14) e close de D-1 (congelados)
     ps_teto = detectar_ps("teto", spot, b_gex, vwap_val, sigma_val,
                           net_dir_ps, ancora_close, atr_ref, PS_THRESHOLDS)
@@ -1626,7 +1650,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v5.3</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v5.4</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
@@ -1704,7 +1728,7 @@ with abas[0]:
                                     key=f"vg_{tk}_{col_}", altura=250, faixa=0.03)
 
         # Volume Imbalance ABAIXO do trio de gráficos
-        st.markdown(regua_fluxo_html(d["comp"], d["vend"], d["fluxo_df"]),
+        st.markdown(regua_fluxo_html(d["comp"], d["vend"], d["fluxo_df"], d["net_dir"]),
                     unsafe_allow_html=True)
 
 
@@ -1741,7 +1765,7 @@ with abas[1]:
                "calls vendidas. Linhas: branca = spot · azul = ímã (maior+) · roxa = muros.")
     for tk in ativos_ok:
         d = dados_ativos[tk]
-        st.markdown(regua_fluxo_html(d["comp"], d["vend"], d["fluxo_df"]), unsafe_allow_html=True)
+        st.markdown(regua_fluxo_html(d["comp"], d["vend"], d["fluxo_df"], d["net_dir"]), unsafe_allow_html=True)
         fig_i = grafico_imbalance(d["fluxo_df"], d["spot"], d["cw"], d["pw"],
                                   d["b_gex"].get("maior_pos"))
         if fig_i:
