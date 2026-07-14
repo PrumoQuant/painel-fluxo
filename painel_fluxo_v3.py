@@ -1184,6 +1184,24 @@ def ps_selo_risco(net_dir, lado, thresholds):
     return "vetada", "vetada — rompimento provável"
 
 
+def _tp_concorda_direcao(b_tp, lado, spot):
+    """Verifica se o Time Pressure tem ímã na mesma direção do lado do PS.
+    O NET é uma APROXIMAÇÃO (a Tradier não entrega o agressor real do negócio,
+    só o terço do spread — v8.3/v5.7) e já mostrou, em validação ao vivo em
+    14/07, poder discordar de sinal em relação à leitura da Quantico. Por isso
+    o NET sozinho não deve mais ter poder de VETO total: precisa de um segundo
+    indicador (aqui, o Time Pressure) apontando na mesma direção para confirmar
+    que o veto é real, não um artefato de classificação. Retorna True se o
+    maior ímã do Time Pressure aponta para o mesmo lado do PS."""
+    if not b_tp:
+        return False
+    if lado == "teto":
+        mp = b_tp.get("maior_pos")
+        return mp is not None and mp > spot
+    mn = b_tp.get("maior_neg")
+    return mn is not None and mn < spot
+
+
 def ps_vwap_banda(spot, vwap, sigma, lado):
     """Quantas bandas (σ) o preço está esticado na direção do lado. Bônus ≥ 2σ."""
     if vwap is None or sigma is None or sigma <= 0:
@@ -1213,21 +1231,37 @@ def avaliar_ps(lado, nivel, extremo_pos_marca):
     return "LOSS" if extremo_pos_marca < nivel * (1 - PS_TOL_ACERTO) else "WIN"
 
 
-def detectar_ps(lado, spot, b_gex, vwap, sigma, net_dir,
+def detectar_ps(lado, spot, b_gex, b_tp, vwap, sigma, net_dir,
                 ancora_close, atr_ref, thresholds):
     """Detecta candidata PS no lado ('teto'/'fundo'). Obrigatórios: (1) parede de
     Delta Hedging na direção com preço encostado (±PS_TOL_PAREDE); (2) NET não
-    'vetado'. Bônus: VWAP ≥ 2σ; ATR consumido ≥ 0,70. Retorna dict ou None."""
+    'vetado' SEM confirmação. Bônus: VWAP ≥ 2σ; ATR consumido ≥ 0,70; Time
+    Pressure concordando com a direção. Retorna dict ou None.
+
+    v5.8 — CONFIRMAÇÃO CRUZADA DO VETO: o NET sozinho não derruba mais um PS.
+    Se o NET indicar 'vetada' mas o Time Pressure NÃO apontar na mesma direção,
+    o veto é rebaixado para 'arriscada' (mostra a marca, com aviso explícito de
+    que o veto foi amaciado por falta de confirmação) em vez de bloquear com
+    confiança que os dados não sustentam."""
     parede = b_gex.get("maior_pos") if lado == "teto" else b_gex.get("maior_neg")
     if parede is None or abs(spot - parede) / spot > PS_TOL_PAREDE:
         return None
     if net_dir is None:            # pregão fechado → sem leitura de fluxo, PS aguarda
         return None
     nivel_risco, txt_risco = ps_selo_risco(net_dir, lado, thresholds)
+    tp_confirma = _tp_concorda_direcao(b_tp, lado, spot)
+    veto_amaciado = False
+    if nivel_risco == "vetada" and not tp_confirma:
+        veto_amaciado = True
+        nivel_risco = "arriscada"
+        txt_risco = ("arriscada — NET sozinho apontou veto, mas o Time Pressure NÃO "
+                      "confirma a mesma direção; NET isolado não é suficiente para "
+                      "vetar (é aproximação, não réplica exata da Quantico)")
     if nivel_risco == "vetada":
         return {"lado": lado, "nivel": parede, "acende": False,
                 "risco": nivel_risco, "risco_txt": txt_risco,
-                "forca": 0, "forca_txt": "vetada", "bonus": [], "net_dir": net_dir}
+                "forca": 0, "forca_txt": "vetada", "bonus": [], "net_dir": net_dir,
+                "tp_confirma": tp_confirma, "veto_amaciado": False}
     bandas = ps_vwap_banda(spot, vwap, sigma, lado)
     atr_frac = ps_atr_consumido(spot, ancora_close, atr_ref, lado)
     bonus = []
@@ -1235,12 +1269,15 @@ def detectar_ps(lado, spot, b_gex, vwap, sigma, net_dir,
         bonus.append("VWAP %.1fσ" % bandas)
     if atr_frac >= 0.70:
         bonus.append("ATR %.0f%%" % (atr_frac * 100))
+    if tp_confirma:
+        bonus.append("Time Pressure confirma")
     forca = 2 + len(bonus)
-    forca_txt = {2: "base", 3: "moderado", 4: "forte"}.get(forca, "base")
+    forca_txt = {2: "base", 3: "moderado", 4: "forte", 5: "forte"}.get(forca, "base")
     return {"lado": lado, "nivel": parede, "acende": True,
             "risco": nivel_risco, "risco_txt": txt_risco,
             "forca": forca, "forca_txt": forca_txt, "bonus": bonus,
-            "bandas": bandas, "atr_frac": atr_frac, "net_dir": net_dir}
+            "bandas": bandas, "atr_frac": atr_frac, "net_dir": net_dir,
+            "tp_confirma": tp_confirma, "veto_amaciado": veto_amaciado}
 
 
 def ps_registrar_marca(tk, ps, spot, hora_ny):
@@ -1728,9 +1765,9 @@ for tk in tickers_para_rodar:
     else:
         net_dir_ps = None
     atr_ref, ancora_close = atr_diario_ref(tk)   # ATR(14) e close de D-1 (congelados)
-    ps_teto = detectar_ps("teto", spot, b_gex, vwap_val, sigma_val,
+    ps_teto = detectar_ps("teto", spot, b_gex, b_tp, vwap_val, sigma_val,
                           net_dir_ps, ancora_close, atr_ref, PS_THRESHOLDS)
-    ps_fundo = detectar_ps("fundo", spot, b_gex, vwap_val, sigma_val,
+    ps_fundo = detectar_ps("fundo", spot, b_gex, b_tp, vwap_val, sigma_val,
                            net_dir_ps, ancora_close, atr_ref, PS_THRESHOLDS)
     # marca as duas trilhas do dia (não apaga a anterior) e atualiza extremos
     _hora_ny = agora_ny.strftime("%H:%M")
@@ -1812,7 +1849,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v5.7</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v5.8</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
@@ -2156,9 +2193,14 @@ with abas[4]:
                "(execução em SPX; leitura no SPY convertido ×10). Duas trilhas por dia: "
                "PS Mínima (Put Credit) no fundo e PS Máxima (Call Credit) no teto. "
                "Obrigatório: preço encostado na parede de Delta Hedging. Bônus: VWAP na "
-               "penúltima/última banda + ATR do dia consumido. O selo de risco vem do NET "
-               "direcional do momento. As marcas do dia não se apagam e são avaliadas no "
-               "fechamento. Ferramenta de ESTUDO — não é recomendação.")
+               "penúltima/última banda + ATR do dia consumido + Time Pressure concordando "
+               "com a direção. v5.8: o NET direcional sozinho NÃO veta mais um PS — o NET "
+               "é uma aproximação (a Tradier não dá o agressor real do negócio) que já "
+               "mostrou poder discordar da leitura da Quantico. Um veto do NET só vale se "
+               "o Time Pressure confirmar a mesma direção; sem confirmação, o veto é "
+               "amaciado para 'arriscada' com aviso explícito. As marcas do dia não se "
+               "apagam e são avaliadas no fechamento. Ferramenta de ESTUDO — não é "
+               "recomendação.")
 
     # Aplicação dupla das zonas PS: mesma zona serve a dois instrumentos.
     st.markdown(
@@ -2222,12 +2264,18 @@ with abas[4]:
                     unsafe_allow_html=True)
                 continue
             bonus_txt = (" · " + " · ".join(ps["bonus"])) if ps["bonus"] else ""
+            aviso_amaciado = ""
+            if ps.get("veto_amaciado"):
+                aviso_amaciado = (
+                    '<div class="sinal-nota">⚠ O NET sozinho apontaria veto aqui, mas '
+                    'foi amaciado: o Time Pressure não confirma a mesma direção. Trate '
+                    'esta marca com cautela extra — é a situação mais incerta do painel.</div>')
             st.markdown(
                 '<div class="setup-linha" style="border-color:%s">%s · <b>%s</b> '
-                'em <b>%s</b> — força <b>%s</b> (%d/4)%s · risco '
-                '<span style="color:%s"><b>%s</b></span>.</div>'
+                'em <b>%s</b> — força <b>%s</b> (%d/5)%s · risco '
+                '<span style="color:%s"><b>%s</b></span>.</div>%s'
                 % (cor, titulo, trava, niv_txt, ps["forca_txt"], ps["forca"],
-                   bonus_txt, cor, ps["risco_txt"]),
+                   bonus_txt, cor, ps["risco_txt"], aviso_amaciado),
                 unsafe_allow_html=True)
 
         # marcas do dia (persistentes) + avaliação de acerto
