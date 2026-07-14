@@ -399,6 +399,24 @@ NVENC_UI = st.sidebar.slider(
 PESO_PONDERADO = MODO_AGREGACAO.startswith("Ponderado")
 
 st.sidebar.markdown("---")
+st.sidebar.caption("Filtro de qualidade do Fluxo (v5.9)")
+st.sidebar.caption("A Tradier não dá o agressor real do negócio (só bid/ask do "
+                   "momento) — o NET é uma aproximação. Estes dois filtros reduzem "
+                   "os casos mais ambíguos: descartam MAIS dado, mas o que sobra "
+                   "tende a ser mais confiável. Não elimina a diferença pra Quantico, "
+                   "só reduz o ruído dentro do que a Tradier permite.")
+FLUXO_SPREAD_MAX = st.sidebar.slider(
+    "Spread máximo aceito (%)", 5, 40, 15, 1,
+    help="Contratos com (ask−bid)/mid acima disso são descartados do fluxo — spread "
+         "largo (comum em OTM/baixa liquidez) torna 'perto do ask/bid' ambíguo. "
+         "Padrão anterior era 25%; 15% é mais rigoroso.")
+FLUXO_VOL_MIN = st.sidebar.slider(
+    "Volume mínimo por negócio novo (contratos)", 1, 10, 2, 1,
+    help="Deltas de volume menores que isso desde o último refresh são ignorados — "
+         "negócios de 1 contrato pesam desproporcionalmente no ruído do NET "
+         "incremental. Padrão anterior contava qualquer delta > 0.")
+
+st.sidebar.markdown("---")
 st.sidebar.caption("PS · Pad Special (trava de crédito)")
 st.sidebar.caption("Limiares de NET (fluxo agressor) que graduam o risco da parede. "
                    "Ajuste ao vivo contra a Quantico.")
@@ -847,7 +865,8 @@ def calcular_time_pressure(calls, puts, spot, venc_str, r, ponderar=False):
         dft = dft[dft["tp"].abs() >= 0.01 * pico]
     return dft.sort_values("strike").reset_index(drop=True)
 
-def calcular_fluxo_institucional(calls, puts, spot, tk, dia_iso, venc_str=None):
+def calcular_fluxo_institucional(calls, puts, spot, tk, dia_iso, venc_str=None,
+                                  spread_max_pct=25.0, vol_min=1):
     """Classificação pelos terços do spread, com duas calibrações Quantico:
     — Descoberta 3 (FILTRO Q): exclui último/abertura > 2,0 ou < 0,05.
     — Descoberta 2 (NOTIONAL): notional do subjacente (volume·100·S) para a
@@ -874,6 +893,16 @@ def calcular_fluxo_institucional(calls, puts, spot, tk, dia_iso, venc_str=None):
     a Quantico faz (trade a trade) do que reclassificar o dia inteiro a cada
     12s. Primeiro render do dia não tem baseline: fica neutro (delta=0) até o
     segundo refresh, quando a primeira leitura incremental aparece.
+
+    AJUSTE v5.9 — FILTROS DE QUALIDADE: a Tradier não entrega o agressor real
+    do negócio (nem no snapshot da cadeia, nem no timesales — confirmado na
+    documentação deles), então classificar "perto do ask = comprador" continua
+    sendo aproximação, não leitura exata (validado ao vivo em 14/07: o NET
+    trocou de sinal com a Quantico mais de uma vez no mesmo dia). Dois filtros
+    configuráveis (sidebar) reduzem os casos mais ambíguos, sem prometer fechar
+    a diferença: spread_max_pct descarta contratos de spread largo (onde "perto
+    do ask/bid" fica impreciso); vol_min descarta deltas de volume muito
+    pequenos (ruído de negócios avulsos de 1 contrato).
     bull = call comprada OU put vendida · bear = put comprada OU call vendida."""
     chave_visto = f"fluxo_vol_visto_{tk}_{dia_iso}"
     chave_acum = f"fluxo_acumulado_{tk}_{dia_iso}"
@@ -899,7 +928,7 @@ def calcular_fluxo_institucional(calls, puts, spot, tk, dia_iso, venc_str=None):
                 if razao > 2.0 or razao < 0.05:   # +100% de lucro ou −95% de perda
                     continue                       # contrato exaurido distorce o hedge
             mid = (bid + ask) / 2.0
-            if mid <= 0 or (ask - bid) / mid > 0.25:   # filtro anti-spread esticado
+            if mid <= 0 or (ask - bid) / mid > (spread_max_pct / 100.0):   # filtro anti-spread esticado (v5.9: configurável)
                 continue
 
             venc_opt = row.get("venc_opt") if tem_venc else venc_str
@@ -911,6 +940,8 @@ def calcular_fluxo_institucional(calls, puts, spot, tk, dia_iso, venc_str=None):
             delta_vol = vol_dia - vol_anterior
             if delta_vol <= 0:
                 continue          # sem negócio novo desde o último refresh (ou glitch de dado)
+            if delta_vol < vol_min:
+                continue          # negócio novo pequeno demais (v5.9): ruído descartado
 
             # este contrato entra no NET OPERACIONAL? (0DTE + janela ±10%)
             eh_0dte = (not tem_venc) or (venc_str is None) or (venc_opt == venc_str)
@@ -1744,7 +1775,8 @@ for tk in tickers_para_rodar:
     tp_df = calcular_time_pressure(calls, puts, spot, venc, r_global, PESO_PONDERADO)
     b_tp = identificar_barras_chave(tp_df, spot, "tp")
     comp, vend, fluxo_df, comp_op, vend_op = calcular_fluxo_institucional(
-        calls, puts, spot, tk, agora_ny.strftime("%Y-%m-%d"), venc)
+        calls, puts, spot, tk, agora_ny.strftime("%Y-%m-%d"), venc,
+        spread_max_pct=FLUXO_SPREAD_MAX, vol_min=FLUXO_VOL_MIN)
     b_fluxo = identificar_barras_chave(fluxo_df, spot, "notional")
 
     vwap_val = sigma_val = None
@@ -1849,7 +1881,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v5.8</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v5.9</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
