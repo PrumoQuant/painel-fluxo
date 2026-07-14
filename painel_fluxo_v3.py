@@ -1061,6 +1061,66 @@ def estado_janela_abertura(agora_ny):
 
 
 # ----------------------------------------------------------------------------
+# CAPTURA CIRÚRGICA DO SINAL DE ABERTURA (v5.6) — dois disparos precisos
+# ----------------------------------------------------------------------------
+# Pedido do operador: ele decide comprado/vendido NO INSTANTE da abertura, então
+# o sinal precisa existir cedo o bastante para dar tempo de agir, mas só depois
+# do pregão estar realmente aberto. Dois alvos fixos, no relógio de NY:
+#   T1 = 09:29:45 NY (10:29:45 BR) — leitura PRÉ-abertura (referência, não grava)
+#   T2 = 09:30:15 NY (10:30:15 BR) — leitura OFICIAL, 15s dentro do pregão real;
+#        é ESTA que congela o sinal do Bell e grava no Supabase.
+# Mecanismo: fora dessa janela crítica o autorefresh segue no ritmo normal
+# (15/30/60s). Ao entrar nos 90s anteriores a T1, o intervalo do autorefresh
+# passa a ser recalculado A CADA RENDER como "ms até o próximo alvo" — o timer
+# fica "travado no relógio" (self-correcting): cada novo render encurta o erro
+# residual em vez de acumular deriva. Isso é o máximo de precisão possível
+# dentro da arquitetura request/response do Streamlit (sem cron nativo); o piso
+# de erro real depende da velocidade de resposta da Tradier + render (a favor
+# da causa: cache Tradier de 12s já é bem mais rápido que isso).
+T1_HORA, T1_MIN, T1_SEG = 9, 29, 45     # 09:29:45 NY — leitura pré-abertura
+T2_HORA, T2_MIN, T2_SEG = 9, 30, 15     # 09:30:15 NY — congelamento oficial
+
+
+def _alvos_bell_hoje(agora_ny):
+    """Retorna (t1, t2) — datetimes de hoje em NY para os dois disparos. None
+    nos fins de semana (não há abertura de pregão de ações)."""
+    if agora_ny.weekday() >= 5:
+        return None, None
+    t1 = agora_ny.replace(hour=T1_HORA, minute=T1_MIN, second=T1_SEG, microsecond=0)
+    t2 = agora_ny.replace(hour=T2_HORA, minute=T2_MIN, second=T2_SEG, microsecond=0)
+    return t1, t2
+
+
+def _janela_captura_bell(agora_ny, t1, t2):
+    """Diz se estamos dentro da janela crítica (90s antes de T1 até 5s depois de
+    T2) e, se sim, qual é o PRÓXIMO alvo a perseguir com o autorefresh cirúrgico.
+    Retorna (dentro_da_janela: bool, proximo_alvo: datetime|None)."""
+    if t1 is None:
+        return False, None
+    janela_ini = t1 - timedelta(seconds=90)
+    janela_fim = t2 + timedelta(seconds=5)
+    if not (janela_ini <= agora_ny <= janela_fim):
+        return False, None
+    if agora_ny < t1:
+        return True, t1
+    if agora_ny < t2:
+        return True, t2
+    return True, None   # já passou dos dois alvos — volta ao ritmo normal
+
+
+def _ms_ate(alvo_dt, agora_dt):
+    if alvo_dt is None:
+        return None
+    return max(250, int((alvo_dt - agora_dt).total_seconds() * 1000))
+
+
+def _snapshot_ativo(d):
+    """Recorte enxuto do estado de um ativo para guardar na captura (não salva
+    o DataFrame inteiro — só o que entra no sinal e no contexto exibido)."""
+    return {"spot": d["spot"], "b_gex": dict(d["b_gex"]), "b_tp": dict(d["b_tp"]),
+            "comp": d["comp"], "vend": d["vend"], "net_dir": d["net_dir"]}
+
+# ----------------------------------------------------------------------------
 # PS (PAD SPECIAL) — régua de exaustão para trava de crédito vertical (SPX)
 # ----------------------------------------------------------------------------
 # Duas trilhas por dia: PS Mínima (Put Credit Special, fundo) e PS Máxima
@@ -1475,7 +1535,7 @@ def grafico_niveis(hist, spot, cw, pw, flip, b_gex, vwap_val, tk, altura=560):
     """Gráfico de Níveis: candlestick 1min em tempo real (Tradier) com as linhas
     do dealer sobrepostas. Resolve a limitação do TradingView gratuito (atraso de
     15 min e ausência dos níveis de opções). NÃO é liquidez passiva do DOM de
-    futuros (isso é a Fase 7 e exige feed Databento/Rithmic) — são os níveis de
+    futuros (isso é a Fase 7 e exige feed pago Databento/Rithmic) — são os níveis de
     Delta-Hedging projetados sobre o preço, que é o que dá para fazer sem custo."""
     if hist is None or hist.empty or "Open" not in hist.columns:
         return None
@@ -1564,13 +1624,23 @@ def cartao_html(rotulo, valor, sub=""):
 agora_ny = datetime.now(ZoneInfo("America/New_York"))
 agora_br = datetime.now(ZoneInfo("America/Sao_Paulo"))
 agora_t = agora_ny.time()
+
+# Alvos do dia para a captura cirúrgica do sinal de abertura (v5.6)
+T1_BELL, T2_BELL = _alvos_bell_hoje(agora_ny)
+DENTRO_CAPTURA_BELL, PROXIMO_ALVO_BELL = _janela_captura_bell(agora_ny, T1_BELL, T2_BELL)
+
 # Três ritmos de atualização (NY):
+#  - CAPTURA CIRÚRGICA (90s antes de 9h29:45 até 5s depois de 9h30:15): o
+#    autorefresh é recalculado a cada render para bater exatamente no próximo
+#    alvo (T1 ou T2) — self-correcting, não acumula deriva.
 #  - MIOLO da abertura (9h29–9h35): 15s — muros mudam rápido, sinal precisa ser fresco
 #  - Janela quente (9h00–9h45): 30s
 #  - Resto do pregão: 60s
 miolo_abertura = dtime(9, 29) <= agora_t <= dtime(9, 35)
 janela_quente = dtime(9, 0) <= agora_t <= dtime(9, 45)
-if miolo_abertura:
+if DENTRO_CAPTURA_BELL and PROXIMO_ALVO_BELL is not None:
+    intervalo_ms = _ms_ate(PROXIMO_ALVO_BELL, agora_ny)
+elif miolo_abertura:
     intervalo_ms = 15000
 elif janela_quente:
     intervalo_ms = 30000
@@ -1652,6 +1722,46 @@ for tk in tickers_para_rodar:
                             ancora_close=ancora_close, ps_teto=ps_teto,
                             ps_fundo=ps_fundo)
 
+# --- Veto SPY×QQQ (calculado cedo — usado pela captura do Bell e pela aba) ---
+veto_geral = ("SPY" in dados_ativos and "QQQ" in dados_ativos and
+              dados_ativos["QQQ"]["setup"] and
+              dados_ativos["QQQ"]["setup"]["codigo"] == "S2" and
+              (not dados_ativos["SPY"]["setup"] or
+               dados_ativos["SPY"]["setup"]["codigo"] != "S2"))
+
+# --- CAPTURA CIRÚRGICA DO SINAL DE ABERTURA (v5.6) --------------------------
+# T1 (09:29:45 NY / 10:29:45 BR): leitura PRÉ-abertura — só referência, NÃO
+# grava no Bell nem no Supabase (o pregão ainda não abriu).
+# T2 (09:30:15 NY / 10:30:15 BR): leitura OFICIAL — 15s dentro do pregão real.
+# É esta que congela o sinal do Bell (uma vez por dia) e grava no Supabase.
+# Guardado em session_state por dia, sobrevive a reruns dentro do mesmo dia.
+_dia_iso_bell = agora_ny.strftime("%Y-%m-%d")
+if T1_BELL is not None and agora_ny >= T1_BELL:
+    _chave_pre = f"bell_pre_{_dia_iso_bell}"
+    if _chave_pre not in st.session_state:
+        st.session_state[_chave_pre] = {
+            "hora": agora_ny.strftime("%H:%M:%S"),
+            "ativos": {tk: _snapshot_ativo(dados_ativos[tk]) for tk in dados_ativos}}
+
+if T2_BELL is not None and agora_ny >= T2_BELL:
+    _chave_freeze = f"bell_freeze_{_dia_iso_bell}"
+    if _chave_freeze not in st.session_state:
+        _sinais_congelados = {}
+        for _tk in [t for t in ("QQQ", "SPY") if t in dados_ativos]:
+            _d = dados_ativos[_tk]
+            _veto_tk = veto_geral and _tk == "QQQ"
+            _sig = direcionamento_abertura(_tk, _d["spot"], _d["setup"], _d["b_gex"],
+                                           _d["b_tp"], _d["b_fluxo"], _d["comp"], _d["vend"],
+                                           veto_ativo=_veto_tk)
+            _sinais_congelados[_tk] = _sig
+            registrar_bell_sinal_banco(_tk, _sig, _dia_iso_bell,
+                                       agora_ny.strftime("%H:%M:%S"))
+        st.session_state[_chave_freeze] = {
+            "hora": agora_ny.strftime("%H:%M:%S"), "sinais": _sinais_congelados}
+
+BELL_PRE = st.session_state.get(f"bell_pre_{_dia_iso_bell}")
+BELL_FREEZE = st.session_state.get(f"bell_freeze_{_dia_iso_bell}")
+
 # --- Alertas de NET extremo (>4M muito forte · 6–8M brutal, dia 05/06) -------
 _dia_alerta = agora_ny.strftime("%Y-%m-%d")
 alertas_net_html = ""
@@ -1668,7 +1778,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v5.5</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v5.6</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
@@ -1700,14 +1810,12 @@ if falhas:
 if not dados_ativos:
     st.stop()
 
-# --- Veto SPY×QQQ (1.5) -------------------------------------------------------
-if "SPY" in dados_ativos and "QQQ" in dados_ativos:
-    s_spy, s_qqq = dados_ativos["SPY"]["setup"], dados_ativos["QQQ"]["setup"]
-    if s_qqq and s_qqq["codigo"] == "S2" and (not s_spy or s_spy["codigo"] != "S2"):
-        st.markdown('<div class="setup-linha alerta-vermelho">⚠️ <b>VETO ATIVO (regra SPY×QQQ):</b> '
-                    'o QQQ armou Rompimento Baixista (S2), mas o SPY não confirmou. '
-                    'SPY é a PERMISSÃO — sem ele, operação proibida.</div>',
-                    unsafe_allow_html=True)
+# --- Aviso de VETO SPY×QQQ (banner topo, fora das abas) -----------------------
+if veto_geral:
+    st.markdown('<div class="setup-linha alerta-vermelho">⚠️ <b>VETO ATIVO (regra SPY×QQQ):</b> '
+                'o QQQ armou Rompimento Baixista (S2), mas o SPY não confirmou. '
+                'SPY é a PERMISSÃO — sem ele, operação proibida.</div>',
+                unsafe_allow_html=True)
 
 # --- Abas ---------------------------------------------------------------------
 nomes_abas = ["Delta-Hedging", "Fluxo", "Time Pressure", "Abertura",
@@ -1817,24 +1925,85 @@ with abas[2]:
 # ============================== ABA · ABERTURA (setups) =======================
 with abas[3]:
     st.caption("S6 é o mais assertivo · S2 é o mais perigoso e EXIGE confirmação do "
-               "SPY · S5 se evita. PrumoQuant Bell (2.3): em construção — sinal "
-               "congelado às 9h29:59 NY e avaliado até 10h00 com MAE/MFE.")
+               "SPY · S5 se evita. PrumoQuant Bell (v5.6): dois disparos cirúrgicos — "
+               "leitura pré-abertura às 9h29:45 NY (10h29:45 BR) e sinal OFICIAL "
+               "congelado às 9h30:15 NY (10h30:15 BR), avaliado até 10h00 com MAE/MFE.")
 
     # --- JANELA OPERACIONAL: só emite sinal na abertura/prévia ---------------
     janela = estado_janela_abertura(agora_ny)
 
-    # --- DIRECIONAMENTO DE ABERTURA — quadro clean, monocromático ---
+    # --- SINAL OFICIAL DO BELL (congelado às 9h30:15 NY) ---------------------
+    # É este quadro que responde à pergunta "comprado ou vendido, na abertura":
+    # o mais cedo que existe é 15s depois do pregão abrir de verdade — antes
+    # disso seria fabricar sinal com o mercado ainda fechado.
+    if BELL_FREEZE:
+        st.markdown(
+            f'<div class="sinal-titulo">Sinal oficial do Bell · congelado às '
+            f'{BELL_FREEZE["hora"]} NY</div>', unsafe_allow_html=True)
+        _corpo_freeze = ""
+        for _tk in [t for t in ("QQQ", "SPY") if t in BELL_FREEZE["sinais"]]:
+            _sig = BELL_FREEZE["sinais"][_tk]
+            _corpo_freeze += f'<div class="sinal-titulo" style="margin-top:14px">{_tk} · {_sig["exec"]}</div>'
+            if _sig["veto"]:
+                _corpo_freeze += f'<div class="sinal-linha sinal-veto">{_sig["veto_txt"]}</div>'
+                continue
+            _vd = _sig.get("vies_dir")
+            if _vd:
+                _cor_vies = "var(--up)" if _vd["direcao"] == "COMPRADO" else "var(--down)"
+                if _vd["entrar_imediato"]:
+                    _corpo_freeze += (
+                        f'<div class="acao-abertura" style="border-color:{_cor_vies}">'
+                        f'<span class="acao-rot">Oficial (9h30:15 NY):</span> '
+                        f'<span class="acao-big" style="color:{_cor_vies}">{_vd["acao_abertura"]}</span> '
+                        f'<span class="vies-forca">({_vd["votos"]}/4 · {_vd["forca"]})</span></div>')
+                    if _vd["contradiz"]:
+                        _corpo_freeze += ('<div class="sinal-nota">⚠ Indicadores e fluxo '
+                                          'discordavam no instante da captura.</div>')
+                else:
+                    _corpo_freeze += (
+                        f'<div class="acao-abertura" style="border-color:var(--ink-3)">'
+                        f'<span class="acao-rot">Oficial (9h30:15 NY):</span> '
+                        f'<span class="acao-big" style="color:var(--ink-2)">AGUARDAR</span> '
+                        f'<span class="vies-forca">(só {_vd["votos"]}/4 — sinal fraco na captura).</span></div>')
+            for _acao, _nivel, _resto in _sig["linhas"]:
+                if _nivel == "—":
+                    _corpo_freeze += f'<div class="sinal-linha">{_resto}</div>'
+                else:
+                    _corpo_freeze += (f'<div class="sinal-linha"><span class="acao">{_acao}</span> '
+                                      f'quando o {_tk} atingir e se manter em '
+                                      f'<span class="sinal-nivel">{_nivel}</span> — {_resto}</div>')
+            _corpo_freeze += f'<div class="sinal-ctx">{_sig["contexto"]}</div>'
+        st.markdown(f'<div class="sinal-box">{_corpo_freeze}'
+                    f'<div class="sinal-nota">Este é o sinal registrado no Supabase — '
+                    f'não recalcula ao longo do dia. Leitura condicional de estudo, '
+                    f'não é recomendação. A decisão e o risco são do operador.</div>'
+                    f'</div>', unsafe_allow_html=True)
+    elif BELL_PRE:
+        st.markdown(
+            f'<div class="sinal-box"><div class="sinal-titulo">Leitura pré-abertura · '
+            f'{BELL_PRE["hora"]} NY</div>'
+            f'<div class="sinal-linha">Capturada às 9h29:45 NY — ainda é referência, '
+            f'o mercado de ações não abriu. O sinal OFICIAL congela 30s depois, às '
+            f'9h30:15 NY (10h30:15 BR), e aparece aqui assim que existir.</div></div>',
+            unsafe_allow_html=True)
+    else:
+        _t1_txt = "9h29:45 NY (10h29:45 BR)"
+        _t2_txt = "9h30:15 NY (10h30:15 BR)"
+        st.markdown(
+            f'<div class="sinal-box"><div class="sinal-titulo">Sinal oficial do Bell</div>'
+            f'<div class="sinal-linha">Ainda não capturado hoje. Leitura pré-abertura em '
+            f'{_t1_txt}; sinal oficial (o que vale para decidir comprado/vendido na '
+            f'abertura) em {_t2_txt}. Mantenha a aba aberta perto desse horário — o '
+            f'painel dispara o refresh sozinho, cronometrado no relógio de NY.</div></div>',
+            unsafe_allow_html=True)
+    st.markdown("---")
+
+    # --- LEITURA AO VIVO (referência contínua, recalcula a cada refresh) -----
     dias_sem = ["segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo"]
     dia_txt = f"{dias_sem[agora_ny.weekday()]}, {agora_ny.strftime('%d/%m/%Y')}"
-    aberto = (janela["fase"] == "ativo")
     meta = (f"{dia_txt} &nbsp;·&nbsp; {agora_ny.strftime('%H:%M')} NY / "
             f"{agora_br.strftime('%H:%M')} BR &nbsp;·&nbsp; {janela['rotulo']}")
 
-    veto_geral = ("SPY" in dados_ativos and "QQQ" in dados_ativos and
-                  dados_ativos["QQQ"]["setup"] and
-                  dados_ativos["QQQ"]["setup"]["codigo"] == "S2" and
-                  (not dados_ativos["SPY"]["setup"] or
-                   dados_ativos["SPY"]["setup"]["codigo"] != "S2"))
     ordem_dir = [t for t in ("QQQ", "SPY") if t in ativos_ok]
 
     corpo = ""
@@ -1848,11 +2017,6 @@ with abas[3]:
         sig = direcionamento_abertura(tk, d["spot"], d["setup"], d["b_gex"],
                                       d["b_tp"], d["b_fluxo"], d["comp"], d["vend"],
                                       veto_ativo=veto_tk, r_fut=_rf, nome_fut=_nf)
-        # Registro persistente do Bell (Fase 2.3): congela o sinal no banco na
-        # abertura (uma vez por dia). Silencioso se o banco não estiver ligado.
-        if janela["fase"] == "ativo":
-            registrar_bell_sinal_banco(tk, sig, agora_ny.strftime("%Y-%m-%d"),
-                                       agora_ny.strftime("%H:%M"))
         corpo += f'<div class="sinal-titulo" style="margin-top:14px">{tk} · {sig["exec"]}</div>'
         if sig["veto"]:
             corpo += f'<div class="sinal-linha sinal-veto">{sig["veto_txt"]}</div>'
@@ -1863,7 +2027,7 @@ with abas[3]:
             if vd["entrar_imediato"]:
                 cor_vies = "var(--up)" if vd["direcao"] == "COMPRADO" else "var(--down)"
                 corpo += (f'<div class="acao-abertura" style="border-color:{cor_vies}">'
-                          f'<span class="acao-rot">Na abertura:</span> '
+                          f'<span class="acao-rot">Ao vivo agora:</span> '
                           f'<span class="acao-big" style="color:{cor_vies}">{vd["acao_abertura"]}</span> '
                           f'<span class="vies-forca">({vd["votos"]}/4 · {vd["forca"]})</span></div>')
                 aviso_c = ('<div class="sinal-nota">⚠ Indicadores e fluxo discordam — '
@@ -1872,7 +2036,7 @@ with abas[3]:
                 corpo += aviso_c
             else:
                 corpo += (f'<div class="acao-abertura" style="border-color:var(--ink-3)">'
-                          f'<span class="acao-rot">Na abertura:</span> '
+                          f'<span class="acao-rot">Ao vivo agora:</span> '
                           f'<span class="acao-big" style="color:var(--ink-2)">AGUARDAR</span> '
                           f'<span class="vies-forca">(só {vd["votos"]}/4 — sinal fraco). '
                           f'Espere o preço tocar um gatilho abaixo.</span></div>')
@@ -1891,7 +2055,7 @@ with abas[3]:
         cd = (" · %s" % janela["countdown"]) if janela["countdown"] else ""
         corpo = (
             '<div class="acao-abertura" style="border-color:var(--ink-3)">'
-            '<span class="acao-rot">Na abertura:</span> '
+            '<span class="acao-rot">Ao vivo agora:</span> '
             '<span class="acao-big" style="color:var(--ink-2)">AGUARDANDO</span> '
             '<span class="vies-forca">(%s%s)</span></div>' % (janela["rotulo"], cd))
 
@@ -1904,13 +2068,13 @@ with abas[3]:
 
     st.markdown(
         f'<div class="sinal-box">'
-        f'<div class="sinal-titulo">Direcionamento de abertura</div>'
+        f'<div class="sinal-titulo">Leitura ao vivo (recalcula a cada refresh)</div>'
         f'<div class="sinal-meta">{meta}</div>'
         f'{corpo}'
         f'{aviso_fechado}'
         f'<div class="sinal-nota">Leitura condicional de estudo — não é recomendação. '
-        f'Sem percentual de confiança (isso exige histórico de sinais, Fase 2.3). '
-        f'A decisão e o risco são do operador.</div>'
+        f'Esta leitura NÃO grava no banco; o registro oficial é o quadro acima, '
+        f'congelado às 9h30:15 NY. A decisão e o risco são do operador.</div>'
         f'</div>', unsafe_allow_html=True)
 
     # --- PLACAR DO PRUMOQUANT BELL (acertos / erros / breakeven) ---
