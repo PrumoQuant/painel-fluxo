@@ -847,31 +847,51 @@ def calcular_time_pressure(calls, puts, spot, venc_str, r, ponderar=False):
         dft = dft[dft["tp"].abs() >= 0.01 * pico]
     return dft.sort_values("strike").reset_index(drop=True)
 
-def calcular_fluxo_institucional(calls, puts, spot, venc_str=None):
+def calcular_fluxo_institucional(calls, puts, spot, tk, dia_iso, venc_str=None):
     """Classificação pelos terços do spread, com duas calibrações Quantico:
     — Descoberta 3 (FILTRO Q): exclui último/abertura > 2,0 ou < 0,05.
     — Descoberta 2 (NOTIONAL): notional do subjacente (volume·100·S) para a
       escala B dos painéis Institutional Flow Q (multi-vencimento, INTOCADO).
     — NET OPERACIONAL (v5.4, correção de escala): além do total multi-venc,
       calcula comp_op/vend_op APENAS do vencimento mais próximo (0DTE) e na
-      janela 0,90–1,10·S. É esse NET que alimenta PS, alertas e régua — o
-      Volume Imbalance da Quantico é intraday/0DTE; somar 6 vencimentos e
-      ITM profundo inflava nosso NET 10–50× (QQQ chegou a $94,7M).
+      janela 0,90–1,10·S.
+
+    CORREÇÃO v5.7 — FLUXO INCREMENTAL (bug estrutural, não de escala):
+    O campo 'volume' da Tradier é o ACUMULADO do dia inteiro por contrato, não
+    o volume do último negócio. A versão anterior reclassificava esse acumulado
+    INTEIRO a cada refresh, baseado em só onde o preço estava NAQUELE instante
+    (perto do bid ou do ask) — então um único negócio pequeno empurrando o
+    'último preço' para perto do ask virava "100% comprador" para o dia inteiro
+    daquele contrato, e no refresh seguinte podia virar "100% vendedor". Isso
+    produzia saltos de dezenas de milhões e troca de sinal em 1-2 minutos —
+    validado ao vivo em 14/07 (nosso NET foi de +$19M a −$39,6M em 3 min no
+    SPY, enquanto o Volume Imbalance da Quantico ficou estável e positivo).
+    Correção: guarda em session_state, por contrato e por dia, o volume visto
+    no ÚLTIMO refresh. A cada render, classifica só o DELTA (volume novo desde
+    a última leitura) usando o bid/ask/último ATUAIS, e ACUMULA esse delta num
+    total que persiste entre renders (zera sozinho ao virar o dia, pela chave
+    incluir dia_iso). Isso é fluxo incremental de verdade — mais perto do que
+    a Quantico faz (trade a trade) do que reclassificar o dia inteiro a cada
+    12s. Primeiro render do dia não tem baseline: fica neutro (delta=0) até o
+    segundo refresh, quando a primeira leitura incremental aparece.
     bull = call comprada OU put vendida · bear = put comprada OU call vendida."""
-    comp = vend = 0.0
-    comp_op = vend_op = 0.0
-    mapa = {}
+    chave_visto = f"fluxo_vol_visto_{tk}_{dia_iso}"
+    chave_acum = f"fluxo_acumulado_{tk}_{dia_iso}"
+    visto = st.session_state.setdefault(chave_visto, {})
+    acum = st.session_state.setdefault(
+        chave_acum, {"comp": 0.0, "vend": 0.0, "comp_op": 0.0, "vend_op": 0.0, "mapa": {}})
+
     for df, tipo in ((calls, "call"), (puts, "put")):
         if df is None or df.empty:
             continue
         tem_venc = "venc_opt" in df.columns
         for _, row in df.iterrows():
             k = num(row.get("strike"))
-            vol = num(row.get("volume"))
+            vol_dia = num(row.get("volume"))   # acumulado do dia (Tradier), não do instante
             bid = num(row.get("bid"))
             ask = num(row.get("ask"))
             ultimo = num(row.get("lastPrice"))
-            if vol <= 0 or ask <= 0 or bid < 0 or bid >= ask or ultimo <= 0:
+            if vol_dia <= 0 or ask <= 0 or bid < 0 or bid >= ask or ultimo <= 0:
                 continue
             abertura = num(row.get("open"))
             if abertura > 0:                      # ← FILTRO QUANTICO (Descoberta 3)
@@ -881,39 +901,53 @@ def calcular_fluxo_institucional(calls, puts, spot, venc_str=None):
             mid = (bid + ask) / 2.0
             if mid <= 0 or (ask - bid) / mid > 0.25:   # filtro anti-spread esticado
                 continue
+
+            venc_opt = row.get("venc_opt") if tem_venc else venc_str
+            contrato_id = row.get("symbol") or f"{tipo}_{k}_{venc_opt}"
+            vol_anterior = visto.get(contrato_id)
+            visto[contrato_id] = vol_dia
+            if vol_anterior is None:
+                continue          # primeira vez que vemos este contrato hoje: só baseline
+            delta_vol = vol_dia - vol_anterior
+            if delta_vol <= 0:
+                continue          # sem negócio novo desde o último refresh (ou glitch de dado)
+
             # este contrato entra no NET OPERACIONAL? (0DTE + janela ±10%)
-            eh_0dte = (not tem_venc) or (venc_str is None) or \
-                      (row.get("venc_opt") == venc_str)
+            eh_0dte = (not tem_venc) or (venc_str is None) or (venc_opt == venc_str)
             na_janela = (spot * 0.90 <= k <= spot * 1.10)
             operacional = eh_0dte and na_janela
             spread = ask - bid
             terco_baixo = bid + spread / 3.0
             terco_alto = ask - spread / 3.0
-            premio = ultimo * vol * 100
-            notional = vol * 100 * spot           # ← escala B (Descoberta 2)
-            entrada = mapa.setdefault(k, {"bull": 0.0, "bear": 0.0, "ntl": 0.0})
-            if ultimo >= terco_alto:      # negociado perto do ask = agressão compradora
+            premio = ultimo * delta_vol * 100
+            notional = delta_vol * 100 * spot     # ← escala B (Descoberta 2), agora incremental
+            entrada = acum["mapa"].setdefault(k, {"bull": 0.0, "bear": 0.0, "ntl": 0.0})
+            if ultimo >= terco_alto:      # negócio novo perto do ask = agressão compradora
                 if tipo == "call":
-                    comp += premio; entrada["bull"] += premio; entrada["ntl"] += notional
-                    if operacional: comp_op += premio
+                    acum["comp"] += premio; entrada["bull"] += premio; entrada["ntl"] += notional
+                    if operacional: acum["comp_op"] += premio
                 else:
-                    vend += premio; entrada["bear"] += premio; entrada["ntl"] -= notional
-                    if operacional: vend_op += premio
-            elif ultimo <= terco_baixo:   # negociado perto do bid = agressão vendedora
+                    acum["vend"] += premio; entrada["bear"] += premio; entrada["ntl"] -= notional
+                    if operacional: acum["vend_op"] += premio
+            elif ultimo <= terco_baixo:   # negócio novo perto do bid = agressão vendedora
                 if tipo == "call":
-                    vend += premio; entrada["bear"] += premio; entrada["ntl"] -= notional
-                    if operacional: vend_op += premio
+                    acum["vend"] += premio; entrada["bear"] += premio; entrada["ntl"] -= notional
+                    if operacional: acum["vend_op"] += premio
                 else:
-                    comp += premio; entrada["bull"] += premio; entrada["ntl"] += notional
-                    if operacional: comp_op += premio
+                    acum["comp"] += premio; entrada["bull"] += premio; entrada["ntl"] += notional
+                    if operacional: acum["comp_op"] += premio
+            # negócio no meio do spread (nem terço alto nem terço baixo): fica sem
+            # classificação direcional, mas o volume já foi marcado como "visto"
+            # acima — não será contado de novo no próximo refresh.
+
     linhas = [{"strike": k, "bull": v["bull"], "bear": v["bear"],
                "net": v["bull"] - v["bear"], "notional": v["ntl"]}
-              for k, v in mapa.items()]
+              for k, v in acum["mapa"].items()]
     if not linhas:
-        return comp, vend, pd.DataFrame(
-            columns=["strike", "bull", "bear", "net", "notional"]), comp_op, vend_op
+        return acum["comp"], acum["vend"], pd.DataFrame(
+            columns=["strike", "bull", "bear", "net", "notional"]), acum["comp_op"], acum["vend_op"]
     dff = pd.DataFrame(linhas).sort_values("strike").reset_index(drop=True)
-    return comp, vend, dff, comp_op, vend_op
+    return acum["comp"], acum["vend"], dff, acum["comp_op"], acum["vend_op"]
 
 def detectar_setup(barras, spot, flip, dominio, cw, pw):
     if not barras:
@@ -1673,7 +1707,7 @@ for tk in tickers_para_rodar:
     tp_df = calcular_time_pressure(calls, puts, spot, venc, r_global, PESO_PONDERADO)
     b_tp = identificar_barras_chave(tp_df, spot, "tp")
     comp, vend, fluxo_df, comp_op, vend_op = calcular_fluxo_institucional(
-        calls, puts, spot, venc)
+        calls, puts, spot, tk, agora_ny.strftime("%Y-%m-%d"), venc)
     b_fluxo = identificar_barras_chave(fluxo_df, spot, "notional")
 
     vwap_val = sigma_val = None
@@ -1778,7 +1812,7 @@ st.markdown(f"""
 <div class="pq-header">
     <div>
         <span class="pq-logo">Prumo<span class="fio">Quant</span>
-        <small style="font-size:0.8rem;color:#6b7280;">v5.6</small></span>
+        <small style="font-size:0.8rem;color:#6b7280;">v5.7</small></span>
         <span class="pq-sub">Fluxo de Opções · Delta-Hedging · Estudo</span>
     </div>
     <div class="pq-meta">
@@ -1888,7 +1922,12 @@ with abas[0]:
 with abas[1]:
     st.caption("Volume Imbalance Flow: prêmio agressor por strike. Verde (direita) = "
                "calls compradas / puts vendidas; vermelho (esquerda) = puts compradas / "
-               "calls vendidas. Linhas: branca = spot · azul = ímã (maior+) · roxa = muros.")
+               "calls vendidas. Linhas: branca = spot · azul = ímã (maior+) · roxa = muros. "
+               "v5.7: fluxo INCREMENTAL — cada refresh soma só o volume NOVO desde a "
+               "leitura anterior (não reclassifica o dia inteiro). O primeiro refresh do "
+               "dia fica neutro (ainda sem base de comparação); a partir do segundo, o "
+               "NET acumula e não deve mais saltar dezenas de milhões nem trocar de sinal "
+               "em minutos como antes.")
     for tk in ativos_ok:
         d = dados_ativos[tk]
         st.markdown(regua_fluxo_html(d["comp"], d["vend"], d["fluxo_df"], d["net_dir"]), unsafe_allow_html=True)
